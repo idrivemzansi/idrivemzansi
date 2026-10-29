@@ -3,6 +3,7 @@ import { FormEvent, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { ArrowLeft, ArrowRight, CarFront, LoaderCircle, ShieldCheck } from "lucide-react";
+import { isValidSaPhone, SA_PHONE_MESSAGE, toSaPhone } from "@/lib/sa-phone";
 
 type Role = "learner" | "instructor";
 const messages: Record<string, string> = { "Email or password is incorrect.": "That email and password combination didn’t match.", "This account is not assigned to the admin role.": "This account doesn’t have admin access." };
@@ -28,7 +29,8 @@ export function SignupForm() {
     try {
       if (!verifyMode) {
         if(!termsAccepted)throw new Error("Accept the Terms of Use before creating your account.");
-        const response = await fetch("/api/auth/signup", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ email, phone, password, role,terms_accepted:true, ...(companyInvite?{company_invite:companyInvite}:{}),...(referralCode?{referral_code:referralCode}:{}) }) });
+        if(!isValidSaPhone(phone))throw new Error(SA_PHONE_MESSAGE);
+        const response = await fetch("/api/auth/signup", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ email, phone: toSaPhone(phone), password, role,terms_accepted:true, ...(companyInvite?{company_invite:companyInvite}:{}),...(referralCode?{referral_code:referralCode}:{}) }) });
         const data = await safeJson(response, "We couldn't start your sign up."); if (!response.ok) throw new Error(data.error ?? "We couldn't start your sign up.");
         setVerifyMode(true); return;
       }

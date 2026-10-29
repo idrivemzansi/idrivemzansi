@@ -4,9 +4,9 @@ import urllib.error
 import urllib.request
 
 
-def handler(event, context):
+def post(path):
     request = urllib.request.Request(
-        os.environ["API_URL"].rstrip("/") + "/v1/internal/reminders/process",
+        os.environ["API_URL"].rstrip("/") + path,
         data=b"{}",
         headers={
             "content-type": "application/json",
@@ -19,4 +19,12 @@ def handler(event, context):
             payload = json.loads(response.read().decode("utf-8"))
             return {"statusCode": response.status, "body": payload}
     except urllib.error.HTTPError as error:
-        raise RuntimeError(f"Reminder API returned {error.code}") from error
+        raise RuntimeError(f"API returned {error.code} for {path}") from error
+
+
+def handler(event, context):
+    return post("/v1/internal/reminders/process")
+
+
+def enatis_expiry_handler(event, context):
+    return post("/v1/internal/enatis/expire")

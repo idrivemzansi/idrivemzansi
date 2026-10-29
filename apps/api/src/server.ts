@@ -2,7 +2,7 @@ import "dotenv/config";
 import express from "express";
 import cors from "cors";
 import helmet from "helmet";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { SESv2Client, SendEmailCommand } from "@aws-sdk/client-sesv2";
 import { z } from "zod";
 import { BatchGetCommand, DeleteCommand, GetCommand, PutCommand, QueryCommand, ScanCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
@@ -81,9 +81,14 @@ async function notifyBookingParties(booking: Record<string, any>, subject: strin
   await Promise.all([sendEmail(String(learner.Item?.email ?? ""), subject, body), sendEmail(String(instructor.Item?.email ?? ""), subject, body)]);
 }
 async function publishWebSocket(userId:string,payload:Record<string,unknown>){if(!wsManagement)return;const connections=await docDb.send(new ScanCommand({TableName:tables.notifications,FilterExpression:"user_id=:user AND #type=:type",ExpressionAttributeNames:{"#type":"type"},ExpressionAttributeValues:{":user":userId,":type":"ws_connection"},Limit:100}));await Promise.all((connections.Items??[]).map(async connection=>{try{await wsManagement.send(new PostToConnectionCommand({ConnectionId:String(connection.connection_id),Data:Buffer.from(JSON.stringify(payload))}));}catch(error){if((error as any)?.$metadata?.httpStatusCode===410)await docDb.send(new DeleteCommand({TableName:tables.notifications,Key:{id:connection.id}})).catch(()=>undefined);else console.error("WebSocket notification failed",error);}}));}
-async function notifyUser(userId: string, type: string, title: string, body: string, data: Record<string, string> = {}) {
-  const id = randomUUID();
-  await docDb.send(new PutCommand({ TableName: tables.notifications, Item: { id, user_id: userId, type, title, body, read: false, priority: "normal", data, created_at: new Date().toISOString() } }));
+async function notifyUser(userId: string, type: string, title: string, body: string, data: Record<string, string> = {}, id: string = randomUUID()): Promise<boolean> {
+  try {
+    await docDb.send(new PutCommand({ TableName: tables.notifications, Item: { id, user_id: userId, type, title, body, read: false, priority: "normal", data, created_at: new Date().toISOString() }, ConditionExpression: "attribute_not_exists(id)" }));
+  } catch (error) {
+    // A caller-supplied deterministic id already exists: the alert was delivered before, so do not repeat it.
+    if ((error as any)?.name === "ConditionalCheckFailedException") return false;
+    throw error;
+  }
   await publishWebSocket(userId,{type,title,body,...data});
   const user = (await docDb.send(new GetCommand({ TableName: tables.users, Key: { id: userId } }))).Item;
   if (user?.sns_endpoint_arn) {
@@ -93,11 +98,12 @@ async function notifyUser(userId: string, type: string, title: string, body: str
       if(quiet?.enabled&&/^\d{2}:\d{2}$/.test(quiet.start??"")&&/^\d{2}:\d{2}$/.test(quiet.end??"")){
         const time=new Intl.DateTimeFormat("en-GB",{timeZone:"Africa/Johannesburg",hour:"2-digit",minute:"2-digit",hourCycle:"h23"}).format(new Date());
         const isQuiet=quiet.start<=quiet.end?time>=quiet.start&&time<quiet.end:time>=quiet.start||time<quiet.end;
-        if(isQuiet)return;
+        if(isQuiet)return true;
       }
     }
     await sns.send(new PublishCommand({ TargetArn: user.sns_endpoint_arn, MessageStructure: "json", Message: JSON.stringify({ default: body, GCM: JSON.stringify({ notification: { title, body }, data: { ...data, type } }) }) })).catch(error => console.error("Push notification failed", error));
   }
+  return true;
 }
 async function completeReferral(referredId:string){
   const pending=(await scanAll(tables.referrals)).find(row=>row.referred_id===referredId&&row.status==="pending");if(!pending)return;
@@ -126,7 +132,20 @@ app.use(express.json({ limit: "1mb", verify: (req, _res, buffer) => { (req as ex
 app.get("/health", (_req, res) => res.json({ status: "ok", service: "mzansidrive-api", timezone: "Africa/Johannesburg", currency: "ZAR" }));
 const roleSchema = z.enum(["learner", "instructor"]);
 const emailSchema = z.string().trim().email().max(254).transform(v => v.toLowerCase());
-const phoneSchema = z.string().trim().regex(/^(\+27|0)[0-9]{9}$/, "Use a South African phone number.");
+function normaliseSaPhone(value: string): string | null {
+  const compact = value.replace(/[\s\-().]/g, "");
+  if (/^0[0-9]{9}$/.test(compact)) return "+27" + compact.slice(1);
+  if (/^27[0-9]{9}$/.test(compact)) return "+" + compact;
+  if (/^\+270[0-9]{9}$/.test(compact)) return "+27" + compact.slice(4);
+  if (/^\+27[0-9]{9}$/.test(compact)) return compact;
+  return null;
+}
+// Accepts 0821234567, +27821234567 or 27821234567 (spaces, dashes, dots and brackets allowed) and stores E.164 +27 form.
+const saPhoneSchema = z.string().trim().max(40)
+  .transform(value => (value === "" ? "" : normaliseSaPhone(value)))
+  .refine(value => value !== null, "Use a South African number like +27821234567 or 0821234567.")
+  .transform(value => value ?? "");
+const phoneSchema = saPhoneSchema.refine(value => value !== "", "Enter your South African mobile number.");
 const signupSchema = z.object({ email: emailSchema, phone: phoneSchema, password: z.string().min(12).max(128), role: roleSchema, terms_accepted:z.literal(true), company_invite: z.string().uuid().optional(), referral_code:z.string().trim().min(4).max(24).optional() });
 const confirmSchema = z.object({ email: emailSchema, code: z.string().trim().min(4).max(12) });
 const loginSchema = z.object({ email: emailSchema, password: z.string().min(1).max(128) });
@@ -180,7 +199,7 @@ async function getManagedCompany(companyId: string, auth: NonNullable<express.Re
 app.post("/v1/auth/signup", async (req, res, next) => {
   try {
     const parsed = signupSchema.safeParse(req.body);
-    if (!parsed.success) { res.status(400).json({ error: "Enter a valid email, password (12+ characters), and learner or instructor role." }); return; }
+    if (!parsed.success) { res.status(400).json(schemaError("Enter a valid email, password (12+ characters), and learner or instructor role.", parsed.error)); return; }
     let inviteCompany: Record<string, any> | undefined;let referrer:Record<string,any>|undefined;
     if (parsed.data.company_invite) {
       if (parsed.data.role !== "instructor") { res.status(400).json({ error: "Company invitations are for instructor accounts." }); return; }
@@ -189,7 +208,7 @@ app.post("/v1/auth/signup", async (req, res, next) => {
       if (!inviteCompany) { res.status(400).json({ error: "This company invitation is invalid or expired." }); return; }
     }
     if(parsed.data.referral_code){const [learners,instructors]=await Promise.all([scanAll(tables.learners),scanAll(tables.instructors)]);referrer=[...learners.map((row:Record<string,any>)=>({...row,user_type:"learner"})),...instructors.map((row:Record<string,any>)=>({...row,user_type:"instructor"}))].find((row:Record<string,any>)=>String(row.referral_code??"").toUpperCase()===parsed.data.referral_code!.toUpperCase());if(!referrer){res.status(400).json({error:"That referral code could not be found."});return;}}
-    const normalizedPhone = parsed.data.phone.startsWith("+") ? parsed.data.phone : "+27" + parsed.data.phone.slice(1);
+    const normalizedPhone = parsed.data.phone;
     const result = await signup(parsed.data.email, parsed.data.password, parsed.data.role, normalizedPhone);
     if (result.UserSub) {
       await docDb.send(new PutCommand({ TableName: tables.users, Item: { id: result.UserSub, email: parsed.data.email, phone: normalizedPhone, user_type: parsed.data.role, terms_accepted_at:new Date().toISOString(), ...(inviteCompany ? { company_id: inviteCompany.id } : {}), ...(referrer?{referrer_id:referrer.user_id,referrer_type:referrer.user_type}:{}), otp_verified: false, created_at: new Date().toISOString() } }));
@@ -304,6 +323,148 @@ app.post("/v1/enatis/alert-lead", async (req, res, next) => {
     res.status(201).json({ status: "subscribed", message: `Alert active for ${body.data.province}` });
   } catch (error) { next(error); }
 });
+const centreKey = (value: unknown) => String(value ?? "").toLowerCase().replace(/\bdltc\b/g, " ").replace(/[^a-z0-9]+/g, " ").trim();
+const provinceKey = (value: unknown) => String(value ?? "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+function slotMatchesPreferences(slot: Record<string, any>, preferences: Array<{ province?: string; test_centre?: string }> = []) {
+  return preferences.some(pref => provinceKey(pref.province) === provinceKey(slot.province) && (!pref.test_centre || centreKey(pref.test_centre) === centreKey(slot.test_centre)));
+}
+function leadMatchesSlot(lead: Record<string, any>, slot: Record<string, any>) {
+  const data = lead.data ?? {};
+  if (provinceKey(data.province) !== provinceKey(slot.province)) return false;
+  const centre = String(data.test_centre ?? "");
+  return !centre || /^any\b/i.test(centre) || centreKey(centre) === centreKey(slot.test_centre);
+}
+function enatisSlotId(slot: { province: string; test_centre: string; available_date: string }) {
+  return `${provinceKey(slot.province)}-${centreKey(slot.test_centre)}-${slot.available_date}`.replace(/\s+/g, "-");
+}
+const saToday = () => new Intl.DateTimeFormat("en-CA", { timeZone: "Africa/Johannesburg" }).format(new Date());
+const saDaysAgo = (days: number) => new Intl.DateTimeFormat("en-CA", { timeZone: "Africa/Johannesburg" }).format(new Date(Date.now() - days * 86_400_000));
+const enatisSlotSchema = z.object({
+  test_centre: z.string().trim().min(2).max(80),
+  province: z.string().trim().min(2).max(60),
+  available_date: z.string().trim().regex(/^\d{4}-\d{2}-\d{2}$/, "Use YYYY-MM-DD."),
+  available_times: z.array(z.string().trim().regex(/^\d{2}:\d{2}$/, "Use 24-hour HH:MM.")).max(24).default([]),
+  status: z.enum(["available", "booked", "cancelled"]).default("available"),
+  source: z.string().trim().max(60).optional(),
+});
+async function sendSms(to: string, message: string) {
+  const sid = process.env.TWILIO_ACCOUNT_SID; const token = process.env.TWILIO_AUTH_TOKEN; const from = process.env.TWILIO_PHONE_NUMBER;
+  if (!sid || !token || !from || !to) return false;
+  const form = new URLSearchParams({ To: to, From: from, Body: message });
+  const response = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${sid}/Messages.json`, { method: "POST", headers: { authorization: `Basic ${Buffer.from(`${sid}:${token}`).toString("base64")}`, "content-type": "application/x-www-form-urlencoded" }, body: form });
+  if (!response.ok) throw new Error(`Twilio alert failed (${response.status})`);
+  return true;
+}
+const MAX_ENATIS_ALERTS = 500;
+async function dispatchEnatisAlerts(slots: Record<string, any>[]) {
+  const result = { learners: 0, leads: 0, sms: 0, truncated: false };
+  if (!slots.length) return result;
+  const [learners, leadRows] = await Promise.all([
+    scanAll(tables.learners),
+    docDb.send(new ScanCommand({ TableName: tables.notifications, FilterExpression: "#type = :type AND user_id = :user", ExpressionAttributeNames: { "#type": "type" }, ExpressionAttributeValues: { ":type": "enatis_lead", ":user": "public-leads" }, Limit: 1000 })),
+  ]);
+  const messages: Array<{ to: string; body: string }> = [];
+  for (const slot of slots) {
+    const when = `${slot.available_date}${slot.available_times?.length ? ` at ${slot.available_times.join(", ")}` : ""}`;
+    const title = `New eNaTIS test slot in ${slot.province}`;
+    const body = `A driving licence test slot opened at ${slot.test_centre} on ${when}. Slots are released in small batches, so book on eNaTIS as soon as you can. Sign in to MzansiDrive to review it.`;
+    const data = { slot_id: String(slot.id), province: String(slot.province), test_centre: String(slot.test_centre), available_date: String(slot.available_date), link: "/learner" };
+    for (const learner of learners) {
+      if (result.learners + result.leads >= MAX_ENATIS_ALERTS) { result.truncated = true; break; }
+      if (!slotMatchesPreferences(slot, learner.enatis_preferences ?? [])) continue;
+      const fresh = await notifyUser(String(learner.user_id), "enatis_slot", title, body, data, `enatis-${slot.id}-${slot.available_since}-${learner.user_id}`);
+      if (!fresh) continue;
+      const user = (await docDb.send(new GetCommand({ TableName: tables.users, Key: { id: learner.user_id } }))).Item ?? {};
+      await sendEmail(String(user.email ?? ""), `New driving licence test slot · ${slot.test_centre}`, body).catch(error => console.error("eNaTIS slot email failed", error));
+      const to = normaliseSaPhone(String(user.phone ?? ""));
+      if (to) messages.push({ to, body: `${title} — ${slot.test_centre}, ${when}.` });
+      result.learners++;
+    }
+    for (const lead of leadRows.Items ?? []) {
+      if (result.learners + result.leads >= MAX_ENATIS_ALERTS) { result.truncated = true; break; }
+      if (!leadMatchesSlot(lead, slot)) continue;
+      const contact = String(lead.data?.contact ?? "");
+      if (!contact) continue;
+      const alertId = `enatis-${slot.id}-${slot.available_since}-lead-${createHash("sha256").update(contact.toLowerCase()).digest("hex").slice(0, 16)}`;
+      let fresh = true;
+      try {
+        await docDb.send(new PutCommand({ TableName: tables.notifications, Item: { id: alertId, user_id: "public-leads", type: "enatis_lead_alert", title, body, read: false, priority: "normal", data: { ...data, contact }, created_at: new Date().toISOString() }, ConditionExpression: "attribute_not_exists(id)" }));
+      } catch (error) {
+        if ((error as any)?.name !== "ConditionalCheckFailedException") throw error;
+        fresh = false;
+      }
+      if (!fresh) continue;
+      if (contact.includes("@")) await sendEmail(contact, `New driving licence test slot · ${slot.test_centre}`, body).catch(error => console.error("eNaTIS lead email failed", error));
+      else { const to = normaliseSaPhone(contact); if (to) messages.push({ to, body: `${title} — ${slot.test_centre}, ${when}.` }); }
+      result.leads++;
+    }
+    if (result.truncated) break;
+  }
+  await Promise.all(messages.map(message => sendSms(message.to, message.body).then(sent => { if (sent) result.sms++; }).catch(error => console.error("eNaTIS SMS alert failed", error))));
+  return result;
+}
+// Partner slot feed: DLTC monitors, driving schools or a manual curation job POST observed availability here.
+app.post("/v1/enatis/slots", async (req, res, next) => {
+  try {
+    const configured = process.env.ENATIS_INGEST_TOKEN;
+    if (!configured) { res.status(503).json({ error: "Slot ingestion is disabled. Set ENATIS_INGEST_TOKEN in the API environment." }); return; }
+    const provided = String(req.header("x-enatis-token") ?? "").trim() || String(req.header("authorization") ?? "").replace(/^bearer\s+/i, "").trim();
+    const supplied = Buffer.from(provided, "utf8"); const expected = Buffer.from(configured, "utf8");
+    if (supplied.length !== expected.length || !timingSafeEqual(supplied, expected)) { res.status(401).json({ error: "A valid partner token is required." }); return; }
+    const body = z.object({ slots: z.array(enatisSlotSchema).min(1).max(100) }).safeParse(req.body);
+    if (!body.success) { res.status(400).json(schemaError("Invalid slot payload.", body.error)); return; }
+    const now = new Date().toISOString();
+    const today = saToday();
+    const prepared = await Promise.all(body.data.slots.map(async input => {
+      const id = enatisSlotId(input);
+      const prior = (await docDb.send(new GetCommand({ TableName: tables.enatisSlots, Key: { id } }))).Item;
+      // A slot whose date has already passed can never be booked: store it expired so it neither shows in the dashboard nor alerts.
+      const status = input.status === "available" && input.available_date < today ? "expired" : input.status;
+      const available = status === "available";
+      const available_times = available ? [...new Set([...(Array.isArray(prior?.available_times) ? prior.available_times : []), ...input.available_times])].sort() : [];
+      // available_since marks the current open run, so a slot that is booked and then released again alerts once more.
+      const available_since = prior?.status === "available" && prior?.available_since ? String(prior.available_since) : now;
+      const item = { id, test_centre: input.test_centre, province: input.province, available_date: input.available_date, available_times, status, source: input.source ?? prior?.source ?? "partner", available_since, first_seen_at: prior?.first_seen_at ?? now, last_seen_at: now };
+      return { item, newlyAvailable: available && prior?.status !== "available" };
+    }));
+    await Promise.all(prepared.map(entry => docDb.send(new PutCommand({ TableName: tables.enatisSlots, Item: entry.item }))));
+    const freshSlots = prepared.filter(entry => entry.newlyAvailable).map(entry => entry.item);
+    const alerted = await dispatchEnatisAlerts(freshSlots);
+    res.status(201).json({ received: prepared.length, new_slots: freshSlots.length, new_slot_ids: freshSlots.map(slot => slot.id), alerted });
+  } catch (error) { next(error); }
+});
+// A driving licence test slot is only useful until its date, so availability that has passed is marked expired.
+// Both readers (the learner dashboard and enatis_check) already filter on status === "available", so nothing else has to change.
+async function expireStaleEnatisSlots() {
+  const today = saToday();
+  const slots = await scanAll(tables.enatisSlots);
+  const stale = slots.filter(slot => slot.status === "available" && String(slot.available_date ?? "") < today);
+  const now = new Date().toISOString();
+  await Promise.all(stale.map(slot => docDb.send(new UpdateCommand({
+    TableName: tables.enatisSlots,
+    Key: { id: slot.id },
+    UpdateExpression: "SET #status=:status, expired_at=:now, last_seen_at=:now",
+    ExpressionAttributeNames: { "#status": "status" },
+    ExpressionAttributeValues: { ":status": "expired", ":now": now },
+  }))));
+  return { checked: slots.length, expired: stale.length };
+}
+// Same shared secret and header as the reminder dispatcher, so EventBridge can drive both jobs and an operator can run one by hand.
+app.post("/v1/internal/enatis/expire", async (req, res, next) => {
+  try {
+    if (!process.env.EVENTBRIDGE_REMINDER_TOKEN || req.header("x-reminder-token") !== process.env.EVENTBRIDGE_REMINDER_TOKEN) { res.status(401).json({ error: "Unauthorized." }); return; }
+    res.json(await expireStaleEnatisSlots());
+  } catch (error) { next(error); }
+});
+// Runs inside the API process so expiry needs no extra infrastructure; every run only scans one small table.
+const enatisExpiryMinutes = Math.max(1, Number(process.env.ENATIS_EXPIRY_INTERVAL_MINUTES) || 15);
+const runEnatisExpiry = () => {
+  void expireStaleEnatisSlots()
+    .then(result => { if (result.expired) console.log(`eNaTIS: expired ${result.expired} stale slot(s)`); })
+    .catch(error => console.error("eNaTIS slot expiry failed", error));
+};
+runEnatisExpiry();
+setInterval(runEnatisExpiry, enatisExpiryMinutes * 60_000).unref();
 app.get("/v1/instructors", async (req, res, next) => {
   try {
     const parsed = searchSchema.safeParse(req.query);
@@ -824,13 +985,13 @@ app.get("/v1/learners/me/profile", requireAuth, requireRole("learner"), async (r
 const learnerProfileSchema = z.object({
   full_name: z.string().trim().min(2).max(120), dob: z.string().date(), address: z.string().trim().min(5).max(500),
   license_goal: z.string().trim().min(2).max(100), transmission_preference: z.enum(["manual", "automatic", "either"]),
-  learning_style: z.string().trim().min(2).max(500), emergency_contact: z.object({ name: z.string().min(2), phone: z.string().min(7), relationship: z.string().min(2) }),
+  learning_style: z.string().trim().min(2).max(500), emergency_contact: z.object({ name: z.string().min(2), phone: phoneSchema, relationship: z.string().min(2) }),
   id_document_url: z.string().min(5), learners_license_url: z.string().min(5),
 });
 app.put("/v1/learners/me/profile", requireAuth, requireRole("learner"), async (req, res, next) => {
   try {
     const parsed = learnerProfileSchema.safeParse(req.body);
-    if (!parsed.success) { res.status(400).json({ error: "Complete every required learner profile field and upload both documents.", details: parsed.error.flatten() }); return; }
+    if (!parsed.success) { res.status(400).json(schemaError("Complete every required learner profile field and upload both documents.", parsed.error)); return; }
     const prefix = "private/" + req.auth!.sub + "/";
     if (!parsed.data.id_document_url.startsWith(prefix) || !parsed.data.learners_license_url.startsWith(prefix)) { res.status(400).json({ error: "Document keys must belong to the signed-in learner." }); return; }
     const bucket = process.env.S3_BUCKET;
@@ -894,21 +1055,31 @@ app.post("/v1/instructors/me/k53-assessment/:id/submit", requireAuth, requireRol
     res.json({ score, passed, correct_answers: correct, total_questions: 10, required_score: 80, next: passed ? "review" : "retake" });
   } catch (error) { next(error); }
 });
+function schemaError(fallback: string, error: z.ZodError) {
+  const flat = error.flatten();
+  const messages = Object.values(flat.fieldErrors).flat().filter((message): message is string => typeof message === "string");
+  return { error: messages.length ? `${fallback} ${messages.slice(0, 3).join(" · ")}` : fallback, details: flat };
+}
 const instructorProfileFields = z.object({
-  full_name: z.string().trim().min(2).max(120).optional(), email: z.string().email().optional(), phone: z.string().min(7).max(30).optional(),
+  full_name: z.string().trim().min(2).max(120).optional(), email: z.string().email().optional(), phone: saPhoneSchema.optional(),
   bio: z.string().max(2000).optional(), experience_years: z.number().min(0).max(80).optional(), languages: z.array(z.string().max(50)).max(20).optional(), city: z.string().max(100).optional(),
   primary_approach: z.string().max(200).optional(), secondary_approaches: z.array(z.string().max(200)).max(20).optional(), philosophy: z.string().max(2000).optional(), student_types: z.array(z.string().max(100)).max(30).optional(), unique_techniques: z.array(z.string().max(300)).max(30).optional(),
   suburbs_covered: z.array(z.string().max(100)).max(50).optional(), lesson_types: z.array(z.enum(["A1","A","B","EB","C1","C","EC1","EC","K53 Test Prep","Defensive Driving","Traffic Department Pass Out Test (3h)"])).max(30).optional(),
-  transmission: z.enum(["manual", "automatic", "both"]).optional(), vehicle_make: z.string().max(100).optional(), vehicle_model: z.string().max(100).optional(),
+  transmission: z.preprocess(value => (value === "" || value === null ? undefined : value), z.enum(["manual", "automatic", "both"]).optional()), vehicle_make: z.string().max(100).optional(), vehicle_model: z.string().max(100).optional(),
   vehicle_photos: z.array(z.string()).max(10).optional(), hourly_rate: z.number().min(0).max(10000).optional(), bank_name: z.string().max(100).optional(), bank_code: z.string().max(20).optional(),
   account_number: z.string().max(50).optional(), teaching_style: z.record(z.unknown()).optional(), specializations: z.array(z.string()).optional(),
   certifications: z.array(z.string()).optional(), social_handles: z.record(z.string()).optional(),
   video_intro_url: z.string().optional(), profile_photo_url: z.string().optional(),
+  lesson_packages: z.array(z.object({ name: z.string().trim().min(2).max(60), lesson_count: z.number().int().min(1).max(100), price: z.number().min(0).max(100000), lesson_type: z.string().trim().max(60).optional() })).max(20).optional(),
 });
+// instructors GSIs (infra/dynamodb/create_tables.py): CityListings on city, VerificationQueue on verification_status, ReferralCodeLookup on referral_code.
+// DynamoDB rejects an empty string in a key attribute, so an empty value on one of these means "leave it as it is", not "clear it".
+const instructorIndexKeys = new Set(["city", "verification_status", "referral_code"]);
+const writableProfileFields = (entries: Array<[string, unknown]>) => entries.filter(([key, value]) => value !== undefined && !(value === "" && instructorIndexKeys.has(key)));
 app.put("/v1/instructors/me/onboarding", requireAuth, requireRole("instructor"), async (req, res, next) => {
   try {
     const body = z.object({ step: z.number().int().min(1).max(9), complete: z.boolean().default(false), terms_accepted: z.boolean().optional(), profile: instructorProfileFields }).safeParse(req.body);
-    if (!body.success) { res.status(400).json({ error: "Invalid onboarding details.", details: body.error.flatten() }); return; }
+    if (!body.success) { res.status(400).json(schemaError("Invalid onboarding details.", body.error)); return; }
     const existing = (await docDb.send(new GetCommand({ TableName: tables.instructors, Key: { user_id: req.auth!.sub } }))).Item ?? {};
     const candidate: Record<string, any> = { ...existing, ...body.data.profile };
     let welcome: { subject: string; body: string; quick_tips: string[]; insights: string[] } | undefined;
@@ -942,11 +1113,15 @@ app.put("/v1/instructors/me/onboarding", requireAuth, requireRole("instructor"),
       await ses.send(new SendEmailCommand({ FromEmailAddress: sender, Destination: { ToAddresses: [email] }, Content: { Simple: { Subject: { Data: generated.subject, Charset: "UTF-8" }, Body: { Text: { Data: generated.body, Charset: "UTF-8" } } } } }));
       welcome = generated;
     }
-    const attrs = Object.entries(body.data.profile);
-    const names: Record<string, string> = { "#step": "onboarding_step", "#complete": "onboarding_complete", "#commission": "commission_rate", "#status": "verification_status", "#profile": "profile_updated_at" };
+    const attrs = writableProfileFields(Object.entries(body.data.profile));
+    const names: Record<string, string> = { "#step": "onboarding_step", "#commission": "commission_rate", "#status": "verification_status", "#profile": "profile_updated_at" };
     const now = new Date().toISOString();
-    const values: Record<string, unknown> = { ":step": body.data.complete ? 9 : Math.min(body.data.step + 1, 9), ":complete": body.data.complete, ":commission": 15, ":status": "pending", ":now": now };
-    const sets = ["#step=:step", "#complete=:complete", "#commission=if_not_exists(#commission,:commission)", "#status=if_not_exists(#status,:status)", "#profile=:now"];
+    // Never move onboarding_step backwards: editing an earlier step must leave the wizard reopening at the furthest step reached.
+    const reachedStep = Math.min(9, Math.max(Number(existing.onboarding_step ?? 0) || 0, body.data.step + 1));
+    const values: Record<string, unknown> = { ":step": body.data.complete ? 9 : reachedStep, ":commission": 15, ":status": "pending", ":now": now };
+    // A partial save must never clear onboarding_complete: an approved instructor editing an earlier step keeps their verified state (requireInstructorComplete depends on it).
+    const sets = ["#step=:step", ...(body.data.complete ? ["#complete=:complete"] : []), "#commission=if_not_exists(#commission,:commission)", "#status=if_not_exists(#status,:status)", "#profile=:now"];
+    if (body.data.complete) { names["#complete"] = "onboarding_complete"; values[":complete"] = true; }
     if (body.data.complete) { names["#terms"] = "terms_accepted_at"; values[":terms"] = now; values[":welcome"] = welcome; sets.push("#terms=:terms", "profile_completeness=:score", "submitted_at=:now", "welcome_email_sent_at=:now", "welcome_message=:welcome"); values[":score"] = 100; }
     attrs.forEach(([key, value], i) => { names["#f" + i] = key; values[":v" + i] = value; sets.push("#f" + i + "=:v" + i); });
     await docDb.send(new UpdateCommand({ TableName: tables.instructors, Key: { user_id: req.auth!.sub }, UpdateExpression: "SET " + sets.join(","), ExpressionAttributeNames: names, ExpressionAttributeValues: values }));
@@ -962,6 +1137,23 @@ app.put("/v1/instructors/me/onboarding", requireAuth, requireRole("instructor"),
     res.json({ status: body.data.complete ? "submitted_for_review" : "saved", profile_completeness: body.data.complete ? 100 : undefined, welcome, next: body.data.complete ? "/instructor/onboarding?step=9" : "/instructor/onboarding?step=" + Math.min(body.data.step + 1, 9) });
   } catch (error) { next(error); }
 });
+// An approved instructor may deliberately restart onboarding so a material profile change is re-checked: the wizard reopens at step 1,
+// the profile leaves the marketplace, and the next submission re-enters the admin review queue.
+app.post("/v1/instructors/me/onboarding/restart", requireAuth, requireRole("instructor"), async (req, res, next) => {
+  try {
+    const existing = (await docDb.send(new GetCommand({ TableName: tables.instructors, Key: { user_id: req.auth!.sub } }))).Item;
+    if (!existing) { res.status(404).json({ error: "Instructor profile not found." }); return; }
+    if (existing.verification_status !== "active") { res.status(409).json({ error: "Only an approved instructor can restart onboarding." }); return; }
+    // Resubmission writes verification_status with if_not_exists(...,"pending"), so it has to leave "active" here or the new submission would never be reviewed again.
+    await docDb.send(new UpdateCommand({
+      TableName: tables.instructors,
+      Key: { user_id: req.auth!.sub },
+      UpdateExpression: "SET onboarding_step=:step, onboarding_complete=:complete, verification_status=:pending, onboarding_restarted_at=:now",
+      ExpressionAttributeValues: { ":step": 1, ":complete": false, ":pending": "pending", ":now": new Date().toISOString() },
+    }));
+    res.json({ status: "restarted", next: "/instructor/onboarding" });
+  } catch (error) { next(error); }
+});
 app.get("/v1/instructors/me/profile", requireAuth, requireRole("instructor"), async (req, res, next) => {
   try {
     const result = await docDb.send(new GetCommand({ TableName: tables.instructors, Key: { user_id: req.auth!.sub } }));
@@ -972,11 +1164,11 @@ app.get("/v1/instructors/me/profile", requireAuth, requireRole("instructor"), as
 app.put("/v1/instructors/me/profile", requireAuth, requireRole("instructor"), requireInstructorComplete, async (req, res, next) => {
   try {
     const body = instructorProfileFields.partial().safeParse(req.body);
-    if (!body.success || Object.keys(body.data ?? {}).length === 0) { res.status(400).json({ error: "Provide valid instructor profile fields.", details: body.success ? undefined : body.error.flatten() }); return; }
+    if (!body.success || Object.keys(body.data ?? {}).length === 0) { res.status(400).json(body.success ? { error: "Provide valid instructor profile fields." } : schemaError("Provide valid instructor profile fields.", body.error)); return; }
     const names: Record<string,string> = { "#updated": "profile_updated_at" };
     const values: Record<string,unknown> = { ":updated": new Date().toISOString() };
     const sets = ["#updated=:updated"];
-    Object.entries(body.data).forEach(([key,value],index)=>{names["#f"+index]=key;values[":v"+index]=value;sets.push("#f"+index+"=:v"+index);});
+    writableProfileFields(Object.entries(body.data)).forEach(([key,value],index)=>{names["#f"+index]=key;values[":v"+index]=value;sets.push("#f"+index+"=:v"+index);});
     const result = await docDb.send(new UpdateCommand({ TableName: tables.instructors, Key: { user_id: req.auth!.sub }, UpdateExpression: "SET "+sets.join(","), ExpressionAttributeNames: names, ExpressionAttributeValues: values, ReturnValues: "ALL_NEW" }));
     res.json({ item: result.Attributes });
   } catch (error) { next(error); }
@@ -1004,7 +1196,7 @@ app.get("/v1/learners/me/dashboard", requireAuth, requireRole("learner"), requir
     const byId = new Map(instructors.map((item: any) => [String(item.user_id), item]));
     const nearby = (instructors as any[]).filter(item => !profile.city || String(item.city ?? "").toLowerCase() === String(profile.city).toLowerCase()).slice(0, 30);
     const referrerCode = profile.referral_code ?? learnerId.slice(0, 8).toUpperCase();
-    res.json({ bookings: rows, upcoming, completed, progress: (progressRows as any).Items ?? [], k53_results: k53Rows.sort((a,b) => String(b.created_at ?? "").localeCompare(String(a.created_at ?? ""))), lesson_plans: plans, logbooks, instructors: nearby, favourites: (profile.favourite_instructors ?? []).map((id: string) => byId.get(String(id))).filter(Boolean), reviews, videos: videos.map(item => { const enrolled=(item.enrollments??[]).includes(learnerId); return { ...item, enrolled, video_url:enrolled?item.video_url:undefined, join_url:enrolled?item.join_url:undefined }; }), referrals, referral_code: referrerCode, referral_credits: Number(profile.referral_credits ?? 0), enatis_slots: slots.filter(item => (profile.enatis_preferences ?? []).some((pref: any) => pref.province === item.province && (!pref.test_centre || pref.test_centre === item.test_centre) && item.status === "available")), enatis_preferences: profile.enatis_preferences ?? [], stats: { upcoming: upcoming.length, completed: completed.length, hours: completed.reduce((sum, item) => sum + Number(item.duration_hours ?? 0), 0) } });
+    res.json({ bookings: rows, upcoming, completed, progress: (progressRows as any).Items ?? [], k53_results: k53Rows.sort((a,b) => String(b.created_at ?? "").localeCompare(String(a.created_at ?? ""))), lesson_plans: plans, logbooks, instructors: nearby, favourites: (profile.favourite_instructors ?? []).map((id: string) => byId.get(String(id))).filter(Boolean), reviews, videos: videos.map(item => { const enrolled=(item.enrollments??[]).includes(learnerId); return { ...item, enrolled, video_url:enrolled?item.video_url:undefined, join_url:enrolled?item.join_url:undefined }; }), referrals, referral_code: referrerCode, referral_credits: Number(profile.referral_credits ?? 0), enatis_slots: slots.filter(item => item.status === "available" && slotMatchesPreferences(item, profile.enatis_preferences ?? [])), enatis_expired: slots.filter(item => item.status === "expired" && slotMatchesPreferences(item, profile.enatis_preferences ?? []) && String(item.available_date ?? "") >= saDaysAgo(14)).sort((a, b) => String(b.available_date).localeCompare(String(a.available_date))).slice(0, 8), enatis_preferences: profile.enatis_preferences ?? [], stats: { upcoming: upcoming.length, completed: completed.length, hours: completed.reduce((sum, item) => sum + Number(item.duration_hours ?? 0), 0) } });
   } catch (error) { next(error); }
 });
 app.post("/v1/learners/me/actions", requireAuth, requireRole("learner"), requireLearnerComplete, async (req, res, next) => {
@@ -1035,7 +1227,7 @@ app.post("/v1/learners/me/actions", requireAuth, requireRole("learner"), require
       await docDb.send(new UpdateCommand({ TableName: tables.learners, Key: { user_id: learnerId }, UpdateExpression: "SET favourite_instructors=:ids", ExpressionAttributeValues: { ":ids": nextIds } })); res.json({ favourite_instructors: nextIds }); return;
     }
     if (body.data.action === "enatis_preferences") { await docDb.send(new UpdateCommand({ TableName: tables.learners, Key: { user_id: learnerId }, UpdateExpression: "SET enatis_preferences=:prefs", ExpressionAttributeValues: { ":prefs": actionData.preferences } })); res.json({ saved: true }); return; }
-    if(body.data.action==="enatis_check"){const profile=(await docDb.send(new GetCommand({TableName:tables.learners,Key:{user_id:learnerId}}))).Item??{};const preferences=profile.enatis_preferences??[];const slots=(await scanAll(tables.enatisSlots)).filter(slot=>slot.status==="available"&&preferences.some((pref:any)=>pref.province===slot.province&&(!pref.test_centre||pref.test_centre===slot.test_centre)));if(slots.length)await notifyUser(learnerId,"enatis_slot","eNaTIS test slot available",`${slots.length} matching driving test slot(s) are available. Open your eNaTIS Monitor to review them.`);let analysis="Your saved province and test-centre preferences were checked against the latest slots available in MzansiDrive.";try{const ai=await infer<{reply:string;suggested_questions:string[];}>("chatbot",{message:`Summarise matching South African eNaTIS driving test availability for these preferences and slots. Be clear that slots may change. Preferences: ${JSON.stringify(preferences)}. Slots: ${JSON.stringify(slots.slice(0,20))}`,user_context:{role:"learner"},page_context:{page:"enatis-monitor"},chat_history:[]});analysis=ai.reply;}catch{}res.json({slots,analysis,notified:slots.length>0});return;}
+    if(body.data.action==="enatis_check"){const profile=(await docDb.send(new GetCommand({TableName:tables.learners,Key:{user_id:learnerId}}))).Item??{};const preferences=profile.enatis_preferences??[];const slots=(await scanAll(tables.enatisSlots)).filter(slot=>slot.status==="available"&&slotMatchesPreferences(slot,preferences));if(slots.length)await notifyUser(learnerId,"enatis_slot","eNaTIS test slot available",`${slots.length} matching driving test slot(s) are available. Open your eNaTIS Monitor to review them.`);let analysis="Your saved province and test-centre preferences were checked against the latest slots available in MzansiDrive.";try{const ai=await infer<{reply:string;suggested_questions:string[];}>("chatbot",{message:`Summarise matching South African eNaTIS driving test availability for these preferences and slots. Be clear that slots may change. Preferences: ${JSON.stringify(preferences)}. Slots: ${JSON.stringify(slots.slice(0,20))}`,user_context:{role:"learner"},page_context:{page:"enatis-monitor"},chat_history:[]});analysis=ai.reply;}catch{}res.json({slots,analysis,notified:slots.length>0});return;}
     if (body.data.action === "enrol_video") {
       const video = (await docDb.send(new GetCommand({ TableName: tables.videoLessons, Key: { id: actionData.video_id } }))).Item;
       if (!video || video.status === "draft") { res.status(404).json({ error: "Video lesson not found." }); return; }

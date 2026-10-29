@@ -1,221 +1,308 @@
 "use client";
 
-import { useMemo, useState } from "react";
-import { ArrowRight, Calculator, Check, Sparkles, Tag, ShieldCheck } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import { ArrowRight, Calculator, Check, MapPin, ShieldCheck, Star, Users } from "lucide-react";
 
-interface PackageTier {
-  id: string;
-  name: string;
+type LessonPackage = { name?: string; lesson_count: number; price: number; lesson_type?: string };
+
+type Instructor = {
+  user_id: string;
+  full_name: string;
+  city?: string;
+  suburbs_covered?: string[];
+  transmission?: string;
+  hourly_rate: number;
+  avg_rating?: number;
+  rating?: number;
+  review_count?: number;
+  experience_years?: number;
+  lesson_packages?: LessonPackage[];
+};
+
+type PriceOption = {
+  key: string;
+  label: string;
+  note?: string;
   lessons: number;
-  discountPct: number;
-  popular?: boolean;
-  tagline: string;
-}
+  price: number;
+};
 
-const tiers: PackageTier[] = [
-  { id: "single", name: "Single Evaluation", lessons: 1, discountPct: 0, tagline: "Assess your baseline & test the waters" },
-  { id: "starter", name: "Confidence Starter", lessons: 5, discountPct: 5, tagline: "Master basic manoeuvres & vehicle controls" },
-  { id: "ready", name: "Road Ready Pack", lessons: 10, discountPct: 10, popular: true, tagline: "Full city driving, parking & intersection prep" },
-  { id: "complete", name: "K53 Pass Guarantee", lessons: 20, discountPct: 15, tagline: "Zero to licenced driver with mock test exams" },
-];
+const formatZar = (amt: number) =>
+  new Intl.NumberFormat("en-ZA", { style: "currency", currency: "ZAR", maximumFractionDigits: 0 }).format(amt);
 
 export default function PriceCalculator() {
-  const [selectedTier, setSelectedTier] = useState<string>("ready");
-  const [transmission, setTransmission] = useState<"manual" | "automatic">("manual");
-  const [includeTestCar, setIncludeTestCar] = useState<boolean>(true);
-  const [ownVehicle, setOwnVehicle] = useState<boolean>(false);
-  const [applyReferral, setApplyReferral] = useState<boolean>(true);
+  const [items, setItems] = useState<Instructor[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [selectedId, setSelectedId] = useState("");
+  const [selectedKey, setSelectedKey] = useState("single");
 
-  // South African standard base hourly rates
-  const hourlyBase = transmission === "manual" ? 300 : 330;
-  const testCarRentalRate = 750; // Dual control test-day car hire + 1hr warmup
-  const referralCredit = 100;
+  useEffect(() => {
+    fetch(`/api/backend/v1/instructors?city=Anywhere&limit=50`)
+      .then(async r => {
+        const data = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(data.error ?? "Could not load instructor prices");
+        setItems(Array.isArray(data.items) ? data.items : []);
+      })
+      .catch(e => setError(e.message))
+      .finally(() => setLoading(false));
+  }, []);
 
-  const currentTier = useMemo(() => tiers.find(t => t.id === selectedTier) ?? tiers[2], [selectedTier]);
+  const withRate = useMemo(
+    () => items.filter(i => Number.isFinite(Number(i.hourly_rate)) && Number(i.hourly_rate) > 0),
+    [items],
+  );
+  const visible = useMemo(() => withRate.slice(0, 6), [withRate]);
+  const range = useMemo(() => {
+    if (!withRate.length) return null;
+    const rates = withRate.map(i => Number(i.hourly_rate));
+    return { min: Math.min(...rates), max: Math.max(...rates) };
+  }, [withRate]);
+
+  const selected = useMemo(
+    () => withRate.find(i => i.user_id === selectedId) ?? visible[0] ?? null,
+    [withRate, visible, selectedId],
+  );
+
+  const options = useMemo<PriceOption[]>(() => {
+    if (!selected) return [];
+    const rate = Number(selected.hourly_rate) || 0;
+    const packages = (selected.lesson_packages ?? [])
+      .filter(p => Number(p?.lesson_count) > 0 && Number(p?.price) > 0)
+      .map((p, index) => ({
+        key: `pkg-${index}`,
+        label: p.name?.trim() || `${p.lesson_count}-lesson package`,
+        note: p.lesson_type,
+        lessons: Number(p.lesson_count),
+        price: Number(p.price),
+      }));
+    return [...packages, { key: "single", label: "Single lesson", note: "Pay as you go", lessons: 1, price: rate }];
+  }, [selected]);
+
+  const option = useMemo(
+    () => options.find(o => o.key === selectedKey) ?? options[options.length - 1] ?? null,
+    [options, selectedKey],
+  );
 
   const calculation = useMemo(() => {
-    const rawLessonTotal = currentTier.lessons * hourlyBase;
-    const tierDiscount = (rawLessonTotal * currentTier.discountPct) / 100;
-    const ownVehicleDiscount = ownVehicle ? (rawLessonTotal - tierDiscount) * 0.1 : 0;
-    const testDayAddon = includeTestCar ? testCarRentalRate : 0;
-    const subtotal = rawLessonTotal - tierDiscount - ownVehicleDiscount + testDayAddon;
-    const referralDiscount = applyReferral ? Math.min(referralCredit, subtotal) : 0;
-    const grandTotal = Math.max(0, subtotal - referralDiscount);
-    const totalSavings = tierDiscount + ownVehicleDiscount + referralDiscount;
-
+    if (!selected || !option) return null;
+    const rate = Number(selected.hourly_rate) || 0;
+    const listTotal = option.lessons * rate;
+    const packageSaving = Math.max(0, listTotal - option.price);
     return {
-      rawLessonTotal,
-      tierDiscount,
-      ownVehicleDiscount,
-      testDayAddon,
-      referralDiscount,
-      grandTotal,
-      totalSavings,
-      perLessonRate: Math.round((rawLessonTotal - tierDiscount - ownVehicleDiscount) / currentTier.lessons),
+      rate,
+      listTotal,
+      packageSaving,
+      total: option.price,
+      perLesson: Math.round(option.price / option.lessons),
     };
-  }, [currentTier, hourlyBase, ownVehicle, includeTestCar, applyReferral]);
+  }, [selected, option]);
 
-  const formatZar = (amt: number) =>
-    new Intl.NumberFormat("en-ZA", { style: "currency", currency: "ZAR", maximumFractionDigits: 0 }).format(amt);
+  const firstName = selected?.full_name?.split(" ")[0] ?? "this instructor";
+  const selectInstructor = (id: string) => {
+    setSelectedId(id);
+    setSelectedKey("single");
+  };
 
   return (
     <div className="price-calc-container">
       <div className="price-calc-header">
         <div className="eyebrow"><Calculator size={13} style={{ display: "inline", verticalAlign: "middle", marginRight: 4 }} /> TRANSPARENT MZANSI PRICING</div>
-        <h3>Calculate your lesson package</h3>
-        <p>No surprises, no hidden vehicle fees. Choose your package and see your exact savings upfront.</p>
+        <h3>Instructors set their own prices</h3>
+        <p>Every instructor chooses their own hourly rate and builds their own lesson packages. Pick an instructor, pick their package, and see exactly what you will pay before you book.</p>
+        {range && (
+          <div className="calc-rate-range">
+            Verified instructor rates right now: <b>{formatZar(range.min)} – {formatZar(range.max)}</b> per hour, set by the instructors themselves.
+          </div>
+        )}
       </div>
 
       <div className="price-calc-grid">
         <div className="price-calc-controls">
-          <label className="calc-group-label">1. CHOOSE YOUR TRANSMISSION</label>
-          <div className="calc-pill-toggle">
-            <button
-              type="button"
-              className={transmission === "manual" ? "active" : ""}
-              onClick={() => setTransmission("manual")}
-            >
-              Manual (Code 8 / EB) · R300/hr
-            </button>
-            <button
-              type="button"
-              className={transmission === "automatic" ? "active" : ""}
-              onClick={() => setTransmission("automatic")}
-            >
-              Automatic · R330/hr
-            </button>
-          </div>
+          <label className="calc-group-label">1. CHOOSE YOUR INSTRUCTOR</label>
+          {loading && <p className="calc-status">Loading instructor prices…</p>}
+          {!loading && error && (
+            <p className="calc-status" role="alert">
+              {error} <a href="#explore">Browse instructors instead</a>
+            </p>
+          )}
+          {!loading && !error && !visible.length && (
+            <p className="calc-status">
+              No instructor has published prices yet. <a href="#explore">Check back soon</a>
+            </p>
+          )}
+          {!!visible.length && (
+            <div className="calc-tier-cards">
+              {visible.map(item => {
+                const isSelected = selected?.user_id === item.user_id;
+                return (
+                  <div
+                    key={item.user_id}
+                    className={`calc-tier-card ${isSelected ? "selected" : ""}`}
+                    onClick={() => selectInstructor(item.user_id)}
+                    onKeyDown={e => {
+                      if (e.key === "Enter" || e.key === " ") {
+                        e.preventDefault();
+                        selectInstructor(item.user_id);
+                      }
+                    }}
+                    role="button"
+                    tabIndex={0}
+                  >
+                    <div className="tier-top">
+                      <b>{item.full_name}</b>
+                      {isSelected && <span className="popular-badge"><Check size={11} /> SELECTED</span>}
+                    </div>
+                    <div className="tier-mid">
+                      <span className="tier-lessons">{formatZar(Number(item.hourly_rate))}<i style={{ fontStyle: "normal", fontSize: 12, fontWeight: 600, color: "#788075" }}> / hr</i></span>
+                    </div>
+                    <small className="tier-tagline">
+                      <MapPin size={11} style={{ display: "inline", verticalAlign: "middle", marginRight: 3 }} />
+                      {item.suburbs_covered?.slice(0, 2).join(", ") || item.city || "South Africa"}
+                      {" · "}
+                      {(item.avg_rating ?? item.rating) ? (
+                        <><Star size={11} fill="currentColor" style={{ display: "inline", verticalAlign: "middle" }} /> {(Number(item.avg_rating ?? item.rating)).toFixed(1)}</>
+                      ) : `${item.experience_years ?? 0} yrs experience`}
+                    </small>
+                  </div>
+                );
+              })}
+            </div>
+          )}
 
-          <label className="calc-group-label" style={{ marginTop: 20 }}>2. SELECT LESSON BUNDLE</label>
-          <div className="calc-tier-cards">
-            {tiers.map(tier => {
-              const isSelected = tier.id === selectedTier;
-              return (
-                <div
-                  key={tier.id}
-                  className={`calc-tier-card ${isSelected ? "selected" : ""}`}
-                  onClick={() => setSelectedTier(tier.id)}
-                  role="button"
-                  tabIndex={0}
-                >
-                  <div className="tier-top">
-                    <b>{tier.name}</b>
-                    {tier.popular && <span className="popular-badge"><Sparkles size={11} /> MOST POPULAR</span>}
-                  </div>
-                  <div className="tier-mid">
-                    <span className="tier-lessons">{tier.lessons} {tier.lessons === 1 ? "Lesson" : "Lessons"}</span>
-                    {tier.discountPct > 0 && <span className="tier-save-tag"><Tag size={11} /> Save {tier.discountPct}%</span>}
-                  </div>
-                  <small className="tier-tagline">{tier.tagline}</small>
+          {selected && option && (
+            <>
+              <label className="calc-group-label" style={{ marginTop: 20 }}>2. CHOOSE {firstName.toUpperCase()}&rsquo;S PACKAGE</label>
+              <div className="calc-tier-cards">
+                {options.map(o => {
+                  const isSelected = o.key === option.key;
+                  const listTotal = o.lessons * Number(selected.hourly_rate || 0);
+                  const saving = Math.max(0, listTotal - o.price);
+                  return (
+                    <div
+                      key={o.key}
+                      className={`calc-tier-card ${isSelected ? "selected" : ""}`}
+                      onClick={() => setSelectedKey(o.key)}
+                      onKeyDown={e => {
+                        if (e.key === "Enter" || e.key === " ") {
+                          e.preventDefault();
+                          setSelectedKey(o.key);
+                        }
+                      }}
+                      role="button"
+                      tabIndex={0}
+                    >
+                      <div className="tier-top">
+                        <b>{o.label}</b>
+                        {saving > 0 && <span className="tier-save-tag">SAVE {formatZar(saving)}</span>}
+                      </div>
+                      <div className="tier-mid">
+                        <span className="tier-lessons">{formatZar(o.price)}</span>
+                        <span className="tier-tagline">
+                          {o.lessons === 1 ? "1 lesson" : `${o.lessons} lessons`}
+                          {o.lessons > 1 ? ` · ${formatZar(Math.round(o.price / o.lessons))} each` : ""}
+                        </span>
+                      </div>
+                      <small className="tier-tagline">{o.note ?? (saving > 0 ? `${firstName}'s bundle price` : "Their standard rate")}</small>
+                    </div>
+                  );
+                })}
+              </div>
+
+              <label className="calc-group-label" style={{ marginTop: 20 }}>HOW PRICING WORKS</label>
+              <div className="calc-options">
+                <div className="calc-checkbox-label">
+                  <Check size={16} style={{ marginTop: 3, color: "var(--green)", flexShrink: 0 }} />
+                  <span>
+                    <b>Instructors name their own rates</b>
+                    <small>MzansiDrive does not set lesson prices, bundle discounts or package sizes — each instructor does.</small>
+                  </span>
                 </div>
-              );
-            })}
-          </div>
-
-          <label className="calc-group-label" style={{ marginTop: 20 }}>3. OPTIONAL ADD-ONS</label>
-          <div className="calc-options">
-            <label className="calc-checkbox-label">
-              <input
-                type="checkbox"
-                checked={includeTestCar}
-                onChange={e => setIncludeTestCar(e.target.checked)}
-              />
-              <span>
-                <b>Include Test-Day Car Hire (+R750)</b>
-                <small>Dual-control vehicle provided at your DLTC test centre + 60 min pre-test warmup.</small>
-              </span>
-            </label>
-
-            <label className="calc-checkbox-label">
-              <input
-                type="checkbox"
-                checked={ownVehicle}
-                onChange={e => setOwnVehicle(e.target.checked)}
-              />
-              <span>
-                <b>Use Your Own Vehicle (10% extra discount)</b>
-                <small>Valid for learners with valid permit and roadworthy, insured vehicle.</small>
-              </span>
-            </label>
-
-            <label className="calc-checkbox-label">
-              <input
-                type="checkbox"
-                checked={applyReferral}
-                onChange={e => setApplyReferral(e.target.checked)}
-              />
-              <span>
-                <b>Apply Referral / Welcome Credit (-R100)</b>
-                <small>Automatically deducted from your first booking checkout.</small>
-              </span>
-            </label>
-          </div>
+                <div className="calc-checkbox-label">
+                  <Check size={16} style={{ marginTop: 3, color: "var(--green)", flexShrink: 0 }} />
+                  <span>
+                    <b>The price you see is the price you pay</b>
+                    <small>These are real published rates from instructor profiles, not estimates.</small>
+                  </span>
+                </div>
+              </div>
+            </>
+          )}
         </div>
 
         <div className="price-calc-summary">
           <div className="summary-card">
-            <div className="summary-title">
-              <span>ESTIMATED INVESTMENT</span>
-              <h4>{formatZar(calculation.grandTotal)}</h4>
-              <small>All inclusive with VAT · No hidden booking charges</small>
-            </div>
-
-            <div className="summary-breakdown">
-              <div className="summary-row">
-                <span>{currentTier.lessons} × {currentTier.lessons === 1 ? "hour" : "hours"} ({transmission})</span>
-                <b>{formatZar(calculation.rawLessonTotal)}</b>
-              </div>
-
-              {calculation.tierDiscount > 0 && (
-                <div className="summary-row discount">
-                  <span>Bundle savings ({currentTier.discountPct}%)</span>
-                  <b>- {formatZar(calculation.tierDiscount)}</b>
+            {calculation && option && selected ? (
+              <>
+                <div className="summary-title">
+                  <span>PACKAGE PRICE</span>
+                  <h4>{formatZar(calculation.total)}</h4>
+                  <small>Set by {selected.full_name} · {selected.city || "South Africa"}</small>
                 </div>
-              )}
 
-              {calculation.ownVehicleDiscount > 0 && (
-                <div className="summary-row discount">
-                  <span>Own vehicle discount (10%)</span>
-                  <b>- {formatZar(calculation.ownVehicleDiscount)}</b>
+                <div className="summary-breakdown">
+                  <div className="summary-row">
+                    <span>
+                      {option.lessons} × {formatZar(calculation.rate)}
+                      {option.lessons === 1 ? " (1 hour)" : " per hour"}
+                    </span>
+                    <b>{formatZar(calculation.listTotal)}</b>
+                  </div>
+
+                  {calculation.packageSaving > 0 && (
+                    <div className="summary-row discount">
+                      <span>{option.label} — {firstName}&rsquo;s own bundle price</span>
+                      <b>- {formatZar(calculation.packageSaving)}</b>
+                    </div>
+                  )}
+
+                  <div className="summary-divider" />
+
+                  <div className="summary-row total">
+                    <span>Total amount</span>
+                    <b>{formatZar(calculation.total)}</b>
+                  </div>
+
+                  {option.lessons > 1 && (
+                    <div className="summary-row">
+                      <span>Works out at</span>
+                      <b>{formatZar(calculation.perLesson)} per lesson</b>
+                    </div>
+                  )}
+
+                  {calculation.packageSaving > 0 && (
+                    <div className="total-saved-pill">
+                      <Check size={14} /> {firstName} priced this bundle {formatZar(calculation.packageSaving)} below their hourly rate.
+                    </div>
+                  )}
                 </div>
-              )}
 
-              {includeTestCar && (
-                <div className="summary-row">
-                  <span>DLTC Test-Day vehicle hire</span>
-                  <b>+ {formatZar(testCarRentalRate)}</b>
+                <div className="summary-trust">
+                  <p><ShieldCheck size={14} /> Price set by the instructor — MzansiDrive does not set lesson prices</p>
+                  <p><ShieldCheck size={14} /> Pay securely with Paystack (Card, Capitec Pay, Instant EFT)</p>
+                  <p><Check size={14} /> Funds released to instructor only after both confirm lesson</p>
                 </div>
-              )}
 
-              {calculation.referralDiscount > 0 && (
-                <div className="summary-row discount">
-                  <span>Referral / Welcome credit</span>
-                  <b>- {formatZar(calculation.referralDiscount)}</b>
+                <a href={`/instructors/${encodeURIComponent(selected.user_id)}`} className="calc-cta-button">
+                  See {firstName}&rsquo;s profile &amp; book <ArrowRight size={15} />
+                </a>
+              </>
+            ) : (
+              <>
+                <div className="summary-title">
+                  <span>INSTRUCTOR-SET PRICING</span>
+                  <h4>{loading ? "…" : "—"}</h4>
+                  <small>{loading ? "Loading published rates" : "No instructor prices to show yet"}</small>
                 </div>
-              )}
-
-              <div className="summary-divider" />
-
-              <div className="summary-row total">
-                <span>Total amount</span>
-                <b>{formatZar(calculation.grandTotal)}</b>
-              </div>
-
-              {calculation.totalSavings > 0 && (
-                <div className="total-saved-pill">
-                  <Check size={14} /> You save a total of {formatZar(calculation.totalSavings)} on this package!
+                <div className="summary-trust">
+                  <p><Users size={14} /> Instructors publish their own hourly rates and packages</p>
+                  <p><ShieldCheck size={14} /> Pay securely with Paystack (Card, Capitec Pay, Instant EFT)</p>
                 </div>
-              )}
-            </div>
-
-            <div className="summary-trust">
-              <p><ShieldCheck size={14} /> Pay securely with Paystack (Card, Capitec Pay, Instant EFT)</p>
-              <p><Check size={14} /> Funds released to instructor only after both confirm lesson</p>
-            </div>
-
-            <a href="/learner/book" className="calc-cta-button">
-              Book this package <ArrowRight size={15} />
-            </a>
+                <a href="#explore" className="calc-cta-button">
+                  Browse instructors <ArrowRight size={15} />
+                </a>
+              </>
+            )}
           </div>
         </div>
       </div>

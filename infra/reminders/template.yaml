@@ -1,6 +1,6 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Transform: AWS::Serverless-2016-10-31
-Description: MzansiDrive EventBridge scheduled reminder dispatcher
+Description: MzansiDrive EventBridge scheduled reminder dispatcher and eNaTIS slot expiry job
 Parameters:
   ApiUrl:
     Type: String
@@ -27,4 +27,22 @@ Resources:
           Type: Schedule
           Properties:
             Schedule: rate(5 minutes)
+            Enabled: true
+  EnatisSlotExpiry:
+    Type: AWS::Serverless::Function
+    Properties:
+      Runtime: python3.12
+      Handler: app.enatis_expiry_handler
+      CodeUri: .
+      Timeout: 60
+      MemorySize: 128
+      Environment:
+        Variables:
+          API_URL: !Ref ApiUrl
+          REMINDER_TOKEN: !Ref ReminderToken
+      Events:
+        Daily:
+          Type: Schedule
+          Properties:
+            Schedule: rate(1 day)
             Enabled: true

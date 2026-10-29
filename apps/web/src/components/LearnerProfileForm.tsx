@@ -2,6 +2,7 @@
 import { FormEvent,useState } from "react";
 import { useRouter } from "next/navigation";
 import { ArrowRight,Check,FileUp,LoaderCircle,ShieldCheck } from "lucide-react";
+import { isValidSaPhone,SA_PHONE_MESSAGE,toSaPhone } from "@/lib/sa-phone";
 
 async function upload(file:File,category:"id-document"|"learners-license") {
   if(file.size>12*1024*1024)throw new Error("Each document must be 12 MB or smaller.");
@@ -19,8 +20,10 @@ export default function LearnerProfileForm(){
     const form=new FormData(event.currentTarget);
     try{
       if(!idDoc||!licenseDoc)throw new Error("Upload both your South African ID and learner’s licence.");
+      const emergencyPhone=String(form.get("emergency_phone"));
+      if(!isValidSaPhone(emergencyPhone))throw new Error(SA_PHONE_MESSAGE);
       const [idKey,licenseKey]=await Promise.all([upload(idDoc,"id-document"),upload(licenseDoc,"learners-license")]);
-      const payload={full_name:String(form.get("full_name")),dob:String(form.get("dob")),address:String(form.get("address")),license_goal:String(form.get("license_goal")),transmission_preference:String(form.get("transmission_preference")),learning_style:String(form.get("learning_style")),emergency_contact:{name:String(form.get("emergency_name")),phone:String(form.get("emergency_phone")),relationship:String(form.get("emergency_relationship"))},id_document_url:idKey,learners_license_url:licenseKey};
+      const payload={full_name:String(form.get("full_name")),dob:String(form.get("dob")),address:String(form.get("address")),license_goal:String(form.get("license_goal")),transmission_preference:String(form.get("transmission_preference")),learning_style:String(form.get("learning_style")),emergency_contact:{name:String(form.get("emergency_name")),phone:toSaPhone(emergencyPhone),relationship:String(form.get("emergency_relationship"))},id_document_url:idKey,learners_license_url:licenseKey};
       const response=await fetch("/api/backend/v1/learners/me/profile",{method:"PUT",headers:{"content-type":"application/json"},body:JSON.stringify(payload)});
       const data=await response.json();if(!response.ok)throw new Error(data.error??"Could not save your profile.");
       setSuccess(true);setTimeout(()=>router.replace("/learner"),500);
@@ -35,7 +38,7 @@ export default function LearnerProfileForm(){
     <label>Transmission preference<select name="transmission_preference" required defaultValue=""><option value="" disabled>Choose one</option><option value="manual">Manual</option><option value="automatic">Automatic</option><option value="either">Either</option></select></label>
     <label className="wide">How do you learn best?<textarea name="learning_style" required minLength={2} placeholder="For example: hands-on practice, clear demonstrations, a calm pace…"/></label>
     <label>Emergency contact name<input name="emergency_name" required minLength={2}/></label>
-    <label>Emergency contact phone<input name="emergency_phone" type="tel" required minLength={7} placeholder="+27…"/></label>
+    <label>Emergency contact phone<input name="emergency_phone" type="tel" required minLength={7} placeholder="+27821234567 or 0821234567"/></label>
     <label>Relationship to you<input name="emergency_relationship" required placeholder="Parent, partner, friend…"/></label>
     <label className="wide">South African ID document<div className="upload-field"><FileUp size={16}/><input type="file" accept="image/jpeg,image/png,image/webp,application/pdf" required onChange={e=>setIdDoc(e.target.files?.[0]??null)}/><small>{idDoc? idDoc.name:"PDF or image · max 12 MB"}</small></div></label>
     <label className="wide">Learner’s licence<div className="upload-field"><FileUp size={16}/><input type="file" accept="image/jpeg,image/png,image/webp,application/pdf" required onChange={e=>setLicenseDoc(e.target.files?.[0]??null)}/><small>{licenseDoc?licenseDoc.name:"PDF or image · max 12 MB"}</small></div></label>

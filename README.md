@@ -99,6 +99,14 @@ Instructors publish weekly hours at `/instructor/availability`. Booking creates 
 
 After payment, both parties receive an SES email and the instructor must accept the request. The EventBridge reminder dispatcher is in `infra/reminders`; deploy its SAM template and set the same random value in Lambda `ReminderToken` and API `EVENTBRIDGE_REMINDER_TOKEN`. It processes due reminders every five minutes using SES and Twilio. Set `TWILIO_PHONE_NUMBER` (or configure your sender) and `SES_FROM_EMAIL`. Rescheduling updates the slot locks and reminder schedule transactionally. The payout path remains gated on instructor completion and learner confirmation.
 
+## eNaTIS slot feed
+
+The homepage radar collects alert leads through `POST /v1/enatis/alert-lead`, and learners save province and test-centre preferences from the eNaTIS Monitor tab. Availability itself arrives from partners (DLTC monitors, driving schools or a manual curation job) through `POST /v1/enatis/slots`, guarded by `ENATIS_INGEST_TOKEN` sent as an `x-enatis-token` header; while that variable is unset the route answers 503. The payload is `{ "slots": [{ "province", "test_centre", "available_date": "YYYY-MM-DD", "available_times": ["08:30"], "status": "available|booked|cancelled", "source" }] }`, up to 100 slots per request. Slot ids are derived from province, centre and date, so re-posting an observation updates the row instead of duplicating it.
+
+Slots expire automatically: the API runs a sweep at startup and then every 15 minutes (override with `ENATIS_EXPIRY_INTERVAL_MINUTES`) that flips any `available` row whose `available_date` is past in South Africa to `expired`, and the ingest route stores a past-dated observation as `expired` instead of `available` so it never alerts. Since the learner dashboard and the `enatis_check` action both filter on `status === "available"`, expired rows simply disappear from both. `POST /v1/internal/enatis/expire` runs the same sweep on demand for EventBridge or an operator, authenticated with the `x-reminder-token` header matching `EVENTBRIDGE_REMINDER_TOKEN`.
+
+Each slot whose current run starts as `available` is matched against saved preferences and unclaimed leads, and every match raises one idempotent in-app notification plus an email, capped at 500 alerts per request. SMS is sent only when `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN` and `TWILIO_PHONE_NUMBER` are set. Centre names are compared case-insensitively with a trailing "DLTC" removed, so a saved preference of "Langlaagte DLTC" matches a feed that posts "Langlaagte".
+
 ## Domain
 
 Configure DNS for www.mzansidrive.co.za to the chosen hosting edge, attach a TLS certificate, and set the deployment's public URL and WEB_ORIGIN. This repository does not change DNS or deploy to the live domain.
