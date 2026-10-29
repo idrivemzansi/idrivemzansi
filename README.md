@@ -1,4 +1,4 @@
-# MzansiDrive
+# iDriveMzansi
 
 Two-sided driving lesson marketplace for South Africa, for learners and verified instructors.
 

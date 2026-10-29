@@ -40,7 +40,7 @@ export default function AdminPayments() {
   function exportCsv() {
     const rows = [["type","id","booking_id","learner_id","instructor_id","amount_charged","platform_fee","instructor_payout","payment_status","payout_status","created_at"], ...(data?.transactions ?? []).map(t => ["booking", t.id, t.id, t.learner_id, t.instructor_id, t.amount_charged, t.platform_fee, t.instructor_payout, t.payment_status, t.payout_status, t.created_at]), ...(data?.paymentTransactions ?? []).map(t => [t.kind, t.id, t.booking_id, t.user_id, t.instructor_id, t.amount, "", "", t.status, t.refund_status, t.created_at]), ...(data?.payouts ?? []).map(p => ["payout", p.id, p.booking_id, "", p.instructor_id, p.amount, "", p.amount, p.status, p.status, p.created_at])];
     const csv = rows.map(row => row.map(value => `"${String(value ?? "").replaceAll('"','""')}"`).join(",")).join("\r\n");
-    const url = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" })); const a = document.createElement("a"); a.href = url; a.download = `mzansidrive-payments-${new Date().toISOString().slice(0,10)}.csv`; a.click(); URL.revokeObjectURL(url);
+    const url = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" })); const a = document.createElement("a"); a.href = url; a.download = `idrivemzansi-payments-${new Date().toISOString().slice(0,10)}.csv`; a.click(); URL.revokeObjectURL(url);
   }
   return <div>
     <div className="dashboard-title"><div className="auth-eyebrow">ADMIN OPERATIONS</div><h1>Payments & payouts</h1><p>Review booking collections, platform fees, refunds, and instructor or company transfers.</p></div>

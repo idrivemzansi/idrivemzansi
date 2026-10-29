@@ -88,7 +88,7 @@ export default function InstructorPackages() {
       <h2>Lesson packages</h2>
       <p>
         You set these prices. Packages appear on your public profile and in the homepage pricing section exactly as you
-        enter them — MzansiDrive never sets or adjusts them.
+        enter them — iDriveMzansi never sets or adjusts them.
       </p>
       {hourlyRate > 0 && (
         <p className="packages-rate">

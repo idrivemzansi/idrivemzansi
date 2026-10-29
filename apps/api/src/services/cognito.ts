@@ -38,7 +38,7 @@ export async function verifyIdToken(token: string): Promise<AppClaims> {
   idVerifier ??= CognitoJwtVerifier.create({ userPoolId, clientId, tokenUse: "id" });
   const claims = await idVerifier.verify(token);
   const role = roleFromClaims(claims as Record<string, unknown>);
-  if (!role || !claims.sub) throw new Error("Account does not have an assigned MzansiDrive role");
+  if (!role || !claims.sub) throw new Error("Account does not have an assigned iDriveMzansi role");
   return { ...claims, sub: claims.sub, email: typeof claims.email === "string" ? claims.email : undefined, role, groups: Array.isArray(claims["cognito:groups"]) ? claims["cognito:groups"] as string[] : [] };
 }
 
@@ -47,7 +47,7 @@ export async function verifyAccessToken(token: string): Promise<AppClaims> {
   accessVerifier ??= CognitoJwtVerifier.create({ userPoolId, clientId, tokenUse: "access" });
   const claims = await accessVerifier.verify(token);
   const role = roleFromClaims(claims as Record<string, unknown>);
-  if (!role || !claims.sub) throw new Error("Account does not have an assigned MzansiDrive role");
+  if (!role || !claims.sub) throw new Error("Account does not have an assigned iDriveMzansi role");
   return { ...claims, sub: claims.sub, email: typeof claims.username === "string" ? claims.username : undefined, role, groups: Array.isArray(claims["cognito:groups"]) ? claims["cognito:groups"] as string[] : [] };
 }
 

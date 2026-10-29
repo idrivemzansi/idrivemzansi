@@ -215,7 +215,7 @@ export default function PriceCalculator() {
                   <Check size={16} style={{ marginTop: 3, color: "var(--green)", flexShrink: 0 }} />
                   <span>
                     <b>Instructors name their own rates</b>
-                    <small>MzansiDrive does not set lesson prices, bundle discounts or package sizes — each instructor does.</small>
+                    <small>iDriveMzansi does not set lesson prices, bundle discounts or package sizes — each instructor does.</small>
                   </span>
                 </div>
                 <div className="calc-checkbox-label">
@@ -278,7 +278,7 @@ export default function PriceCalculator() {
                 </div>
 
                 <div className="summary-trust">
-                  <p><ShieldCheck size={14} /> Price set by the instructor — MzansiDrive does not set lesson prices</p>
+                  <p><ShieldCheck size={14} /> Price set by the instructor — iDriveMzansi does not set lesson prices</p>
                   <p><ShieldCheck size={14} /> Pay securely with Paystack (Card, Capitec Pay, Instant EFT)</p>
                   <p><Check size={14} /> Funds released to instructor only after both confirm lesson</p>
                 </div>

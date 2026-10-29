@@ -1,4 +1,4 @@
-"""Provision the MzansiDrive Cognito user pool, app client, and role groups.
+"""Provision the iDriveMzansi Cognito user pool, app client, and role groups.
 
 Uses Cognito's built-in email code verification and creates a public, no-secret
 app client for the server-mediated web and mobile auth flows.
@@ -31,8 +31,8 @@ def main():
             "EmailConfiguration": {"EmailSendingAccount": "COGNITO_DEFAULT"},
             "VerificationMessageTemplate": {
                 "DefaultEmailOption": "CONFIRM_WITH_CODE",
-                "EmailSubject": "Your MzansiDrive verification code",
-                "EmailMessage": "Your MzansiDrive verification code is {####}",
+                "EmailSubject": "Your iDriveMzansi verification code",
+                "EmailMessage": "Your iDriveMzansi verification code is {####}",
             },
             "Policies": {"PasswordPolicy": {
                 "MinimumLength": 12,

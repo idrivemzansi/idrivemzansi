@@ -151,7 +151,7 @@ export default function InstructorProfilePage() {
     const url = window.location.href;
     try {
       if (navigator.share) {
-        await navigator.share({ title: instructor?.full_name ?? "MzansiDrive instructor", url });
+        await navigator.share({ title: instructor?.full_name ?? "iDriveMzansi instructor", url });
         return;
       }
       await navigator.clipboard.writeText(url);
@@ -487,7 +487,7 @@ export default function InstructorProfilePage() {
             {notice && <p className="ip-notice" role="status">{notice}</p>}
 
             <div className="ip-trust">
-              <span><ShieldCheck size={13} /> Documents and credentials verified by MzansiDrive.</span>
+              <span><ShieldCheck size={13} /> Documents and credentials verified by iDriveMzansi.</span>
               <span><Check size={13} /> Pay securely in ZAR with Paystack.</span>
               <span><Clock3 size={13} /> Full refund when you cancel 24 hours ahead.</span>
             </div>
@@ -504,7 +504,7 @@ function SiteHeader() {
     <header className="topbar">
       <a href="/" className="brand">
         <span className="brand-icon"><CarFront size={23} /></span>
-        <span>mzansi<span className="brand-strong">drive</span><small>.co.za</small></span>
+        <span>iDrive<span className="brand-strong">Mzansi</span></span>
       </a>
       <nav className={open ? "nav-links open" : "nav-links"}>
         <a href="/#explore" onClick={() => setOpen(false)}>Find an instructor</a>

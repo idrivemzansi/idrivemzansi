@@ -3,9 +3,11 @@ import { FormEvent,useState } from "react";
 import { useRouter } from "next/navigation";
 import { ArrowRight,Check,FileUp,LoaderCircle,ShieldCheck } from "lucide-react";
 import { isValidSaPhone,SA_PHONE_MESSAGE,toSaPhone } from "@/lib/sa-phone";
+import { optimiseImage } from "@/lib/optimise-image";
 
 async function upload(file:File,category:"id-document"|"learners-license") {
   if(file.size>12*1024*1024)throw new Error("Each document must be 12 MB or smaller.");
+  file=await optimiseImage(file);
   const signed=await fetch("/api/backend/v1/uploads/presign",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({category,fileName:file.name,contentType:file.type})});
   const data=await signed.json();if(!signed.ok)throw new Error(data.error??"Could not prepare document upload.");
   const result=await fetch(data.uploadUrl,{method:"PUT",headers:{"content-type":file.type,"x-amz-server-side-encryption":"AES256"},body:file});

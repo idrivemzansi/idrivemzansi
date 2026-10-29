@@ -1,4 +1,4 @@
-/** Server-only client for the private MzansiDrive Modal web app. */
+/** Server-only client for the private iDriveMzansi Modal web app. */
 export async function infer<T>(task: string, payload: unknown): Promise<T> {
   const baseUrl = process.env.MODAL_AI_URL;
   const token = process.env.MODAL_AI_TOKEN;
