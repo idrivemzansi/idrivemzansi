@@ -1,0 +1,12 @@
+{
+  "name": "mzansidrive",
+  "private": true,
+  "workspaces": ["apps/web", "apps/api", "apps/mobile"],
+  "scripts": {
+    "dev": "npm run dev --workspace @mzansidrive/web",
+    "dev:web": "npm run dev --workspace @mzansidrive/web",
+    "dev:api": "npm run dev --workspace @mzansidrive/api",
+    "build": "npm run build --workspace @mzansidrive/web",
+    "typecheck": "npm run typecheck --workspace @mzansidrive/web && npm run typecheck --workspace @mzansidrive/api"
+  }
+}

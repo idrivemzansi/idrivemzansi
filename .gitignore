@@ -1,0 +1,7 @@
+node_modules/
+.next/
+dist/
+apps/api/.env
+apps/web/.env.local
+apps/mobile/.env
+*.log

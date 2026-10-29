@@ -1,0 +1,30 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: MzansiDrive EventBridge scheduled reminder dispatcher
+Parameters:
+  ApiUrl:
+    Type: String
+    Description: Public MzansiDrive API base URL, for example https://api.mzansidrive.co.za
+  ReminderToken:
+    Type: String
+    NoEcho: true
+    Description: Must match EVENTBRIDGE_REMINDER_TOKEN configured on the API
+Resources:
+  ReminderDispatcher:
+    Type: AWS::Serverless::Function
+    Properties:
+      Runtime: python3.12
+      Handler: app.handler
+      CodeUri: .
+      Timeout: 60
+      MemorySize: 128
+      Environment:
+        Variables:
+          API_URL: !Ref ApiUrl
+          REMINDER_TOKEN: !Ref ReminderToken
+      Events:
+        EveryFiveMinutes:
+          Type: Schedule
+          Properties:
+            Schedule: rate(5 minutes)
+            Enabled: true

@@ -1,0 +1,3 @@
+"use client";
+import {useState} from "react";
+export function VideoPlayButton({id,type}:{id:string;type:string}){const[error,setError]=useState("");const[busy,setBusy]=useState(false);async function play(){setBusy(true);setError("");try{const r=await fetch(`/api/backend/v1/video-lessons/${encodeURIComponent(id)}/play`);const d=await r.json();if(!r.ok)throw Error(d.error??"Could not open lesson.");window.open(d.url,"_blank","noopener,noreferrer");}catch(e:any){setError(e.message);}finally{setBusy(false);}}return <span><button onClick={play} disabled={busy}>{busy?"Opening…":type==="live"?"Join live lesson":"Watch lesson"}</button>{error&&<small role="alert">{error}</small>}</span>}

@@ -1,0 +1,4 @@
+import { useLocalSearchParams,Link } from "expo-router";
+import { SafeAreaView,StyleSheet,Text,View } from "react-native";
+export default function InstructorSection(){const{section}=useLocalSearchParams<{section:string}>();return <SafeAreaView style={s.safe}><View style={s.body}><Text style={s.eyebrow}>INSTRUCTOR STUDIO</Text><Text style={s.title}>{String(section??"").replace("-"," ")}</Text><Text style={s.copy}>This instructor area is available after your profile is verified.</Text><Link href="/instructor" style={s.link}>Back to instructor home →</Link></View></SafeAreaView>}
+const s=StyleSheet.create({safe:{flex:1,backgroundColor:"#f8f7f2"},body:{padding:20},eyebrow:{fontSize:8,fontWeight:"700",letterSpacing:1.3,color:"#63806a"},title:{fontSize:25,fontWeight:"600",color:"#202c25",marginTop:8,textTransform:"capitalize"},copy:{fontSize:10,color:"#737970",lineHeight:16,marginTop:8},link:{fontSize:9,color:"#315940",fontWeight:"700",marginTop:20}});

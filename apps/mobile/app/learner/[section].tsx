@@ -1,0 +1,5 @@
+import { useLocalSearchParams, Link } from "expo-router";
+import { SafeAreaView, StyleSheet, Text, View } from "react-native";
+const titles:Record<string,string>={lessons:"My lessons",messages:"Messages",progress:"Progress & logbook"};
+export default function LearnerSection(){const {section}=useLocalSearchParams<{section:string}>();const title=titles[section]??"Learner space";return <SafeAreaView style={s.safe}><View style={s.body}><Text style={s.eyebrow}>LEARNER SPACE</Text><Text style={s.title}>{title}</Text><Text style={s.copy}>Once you book your first lesson, your {title.toLowerCase()} will appear here.</Text><Link href="/learner" style={s.link}>Back to learner home →</Link></View></SafeAreaView>}
+const s=StyleSheet.create({safe:{flex:1,backgroundColor:"#f8f7f2"},body:{padding:20},eyebrow:{fontSize:8,fontWeight:"700",letterSpacing:1.3,color:"#63806a"},title:{fontSize:26,fontWeight:"600",color:"#202c25",marginTop:8},copy:{fontSize:10,color:"#737970",lineHeight:17,marginTop:8},link:{fontSize:9,color:"#315940",fontWeight:"700",marginTop:20}});

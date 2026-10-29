@@ -1,0 +1,25 @@
+{
+  "expo": {
+    "name": "MzansiDrive",
+    "slug": "mzansidrive",
+    "scheme": "mzansidrive",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "light",
+    "plugins": [
+      "expo-router",
+      "expo-secure-store",
+      "expo-status-bar"
+    ],
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "za.co.mzansidrive.app"
+    },
+    "android": {
+      "package": "za.co.mzansidrive.app",
+      "adaptiveIcon": {
+        "backgroundColor": "#244b38"
+      }
+    }
+  }
+}

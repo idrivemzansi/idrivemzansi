@@ -1,0 +1,107 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: MzansiDrive authenticated API Gateway WebSocket for live chat and notifications
+Parameters:
+  LambdaCodeBucket:
+    Type: String
+    Description: S3 bucket containing the bundled apps/api/src/websocket.ts Lambda artifact
+  LambdaCodeKey:
+    Type: String
+    Description: S3 object key for the websocket Lambda artifact zip
+  CognitoUserPoolId:
+    Type: String
+  CognitoUserPoolClientId:
+    Type: String
+  DynamoDbTablePrefix:
+    Type: String
+    Default: mzansidrive-
+Resources:
+  RealtimeApi:
+    Type: AWS::ApiGatewayV2::Api
+    Properties:
+      Name: mzansidrive-realtime
+      ProtocolType: WEBSOCKET
+      RouteSelectionExpression: '$request.body.action'
+  LambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { Service: lambda.amazonaws.com }
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: RealtimeConnections
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: [dynamodb:PutItem, dynamodb:DeleteItem]
+                Resource: !Sub 'arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${DynamoDbTablePrefix}notifications'
+              - Effect: Allow
+                Action: [logs:CreateLogGroup, logs:CreateLogStream, logs:PutLogEvents]
+                Resource: '*'
+  RealtimeHandler:
+    Type: AWS::Lambda::Function
+    Properties:
+      Runtime: nodejs22.x
+      Handler: websocket.handler
+      Role: !GetAtt LambdaRole.Arn
+      Timeout: 15
+      MemorySize: 256
+      Code:
+        S3Bucket: !Ref LambdaCodeBucket
+        S3Key: !Ref LambdaCodeKey
+      Environment:
+        Variables:
+          COGNITO_USER_POOL_ID: !Ref CognitoUserPoolId
+          COGNITO_CLIENT_ID: !Ref CognitoUserPoolClientId
+          DYNAMODB_TABLE_PREFIX: !Ref DynamoDbTablePrefix
+          AWS_REGION: !Ref AWS::Region
+  RealtimeIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref RealtimeApi
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !Sub 'arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${RealtimeHandler.Arn}/invocations'
+      IntegrationMethod: POST
+      PayloadFormatVersion: '1.0'
+  ConnectRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref RealtimeApi
+      RouteKey: '$connect'
+      AuthorizationType: NONE
+      Target: !Sub 'integrations/${RealtimeIntegration}'
+  DisconnectRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref RealtimeApi
+      RouteKey: '$disconnect'
+      AuthorizationType: NONE
+      Target: !Sub 'integrations/${RealtimeIntegration}'
+  DefaultRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref RealtimeApi
+      RouteKey: '$default'
+      AuthorizationType: NONE
+      Target: !Sub 'integrations/${RealtimeIntegration}'
+  RealtimeStage:
+    Type: AWS::ApiGatewayV2::Stage
+    Properties:
+      ApiId: !Ref RealtimeApi
+      StageName: prod
+      AutoDeploy: true
+  ApiInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref RealtimeHandler
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub 'arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${RealtimeApi}/*'
+Outputs:
+  WebSocketUrl:
+    Value: !Sub 'wss://${RealtimeApi}.execute-api.${AWS::Region}.${AWS::URLSuffix}/prod'
+  ManagementEndpoint:
+    Value: !Sub 'https://${RealtimeApi}.execute-api.${AWS::Region}.${AWS::URLSuffix}/prod'
