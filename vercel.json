@@ -1,27 +1,7 @@
 {
-  "$schema": "https://openapi.vercel.sh/vercel.json",
-  "services": {
-    "api": {
-      "root": "apps/api",
-      "framework": "express"
-    },
-    "web": {
-      "root": "apps/web",
-      "framework": "nextjs"
-    }
-  },
-  "rewrites": [
-    {
-      "source": "/api/(.*)",
-      "destination": {
-        "service": "api"
-      }
-    },
-    {
-      "source": "/(.*)",
-      "destination": {
-        "service": "web"
-      }
-    }
-  ]
+  "version": 2,
+  "installCommand": "npm install --legacy-peer-deps",
+  "buildCommand": "npm run build --workspace @mzansidrive/web",
+  "outputDirectory": "apps/web/.next",
+  "framework": "nextjs"
 }
