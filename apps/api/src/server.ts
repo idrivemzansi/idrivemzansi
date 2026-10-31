@@ -10,6 +10,7 @@ import { GetObjectCommand, HeadObjectCommand, PutObjectCommand } from "@aws-sdk/
 import { PublishCommand, SNSClient } from "@aws-sdk/client-sns";
 import { ApiGatewayManagementApiClient, PostToConnectionCommand } from "@aws-sdk/client-apigatewaymanagementapi";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
+import { AccessToken, RoomServiceClient } from "livekit-server-sdk";
 import { docDb, tables } from "./services/dynamodb.js";
 import { s3 } from "./services/s3.js";
 import { requireAuth, requireRole } from "./middleware/auth.js";
@@ -347,23 +348,14 @@ const enatisSlotSchema = z.object({
   status: z.enum(["available", "booked", "cancelled"]).default("available"),
   source: z.string().trim().max(60).optional(),
 });
-async function sendSms(to: string, message: string) {
-  const sid = process.env.TWILIO_ACCOUNT_SID; const token = process.env.TWILIO_AUTH_TOKEN; const from = process.env.TWILIO_PHONE_NUMBER;
-  if (!sid || !token || !from || !to) return false;
-  const form = new URLSearchParams({ To: to, From: from, Body: message });
-  const response = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${sid}/Messages.json`, { method: "POST", headers: { authorization: `Basic ${Buffer.from(`${sid}:${token}`).toString("base64")}`, "content-type": "application/x-www-form-urlencoded" }, body: form });
-  if (!response.ok) throw new Error(`Twilio alert failed (${response.status})`);
-  return true;
-}
 const MAX_ENATIS_ALERTS = 500;
 async function dispatchEnatisAlerts(slots: Record<string, any>[]) {
-  const result = { learners: 0, leads: 0, sms: 0, truncated: false };
+  const result = { learners: 0, leads: 0, truncated: false };
   if (!slots.length) return result;
   const [learners, leadRows] = await Promise.all([
     scanAll(tables.learners),
     docDb.send(new ScanCommand({ TableName: tables.notifications, FilterExpression: "#type = :type AND user_id = :user", ExpressionAttributeNames: { "#type": "type" }, ExpressionAttributeValues: { ":type": "enatis_lead", ":user": "public-leads" }, Limit: 1000 })),
   ]);
-  const messages: Array<{ to: string; body: string }> = [];
   for (const slot of slots) {
     const when = `${slot.available_date}${slot.available_times?.length ? ` at ${slot.available_times.join(", ")}` : ""}`;
     const title = `New eNaTIS test slot in ${slot.province}`;
@@ -376,8 +368,6 @@ async function dispatchEnatisAlerts(slots: Record<string, any>[]) {
       if (!fresh) continue;
       const user = (await docDb.send(new GetCommand({ TableName: tables.users, Key: { id: learner.user_id } }))).Item ?? {};
       await sendEmail(String(user.email ?? ""), `New driving licence test slot · ${slot.test_centre}`, body).catch(error => console.error("eNaTIS slot email failed", error));
-      const to = normaliseSaPhone(String(user.phone ?? ""));
-      if (to) messages.push({ to, body: `${title} — ${slot.test_centre}, ${when}.` });
       result.learners++;
     }
     for (const lead of leadRows.Items ?? []) {
@@ -395,12 +385,10 @@ async function dispatchEnatisAlerts(slots: Record<string, any>[]) {
       }
       if (!fresh) continue;
       if (contact.includes("@")) await sendEmail(contact, `New driving licence test slot · ${slot.test_centre}`, body).catch(error => console.error("eNaTIS lead email failed", error));
-      else { const to = normaliseSaPhone(contact); if (to) messages.push({ to, body: `${title} — ${slot.test_centre}, ${when}.` }); }
       result.leads++;
     }
     if (result.truncated) break;
   }
-  await Promise.all(messages.map(message => sendSms(message.to, message.body).then(sent => { if (sent) result.sms++; }).catch(error => console.error("eNaTIS SMS alert failed", error))));
   return result;
 }
 // Partner slot feed: DLTC monitors, driving schools or a manual curation job POST observed availability here.
@@ -945,15 +933,6 @@ app.post("/v1/internal/reminders/process", async (req, res, next) => {
         const emails = [String(learner.Item?.email ?? ""), String(instructor.Item?.email ?? "")];
         await Promise.all(emails.map(email => sendEmail(email, "Upcoming driving lesson · iDriveMzansi", message)));
         if([24,2].includes(Number(reminder.hours_before)))await Promise.all([notifyUser(String(booking.learner_id),"lesson_reminder","Upcoming driving lesson",message,{booking_id:booking.id}),notifyUser(String(booking.instructor_id),"lesson_reminder","Upcoming driving lesson",message,{booking_id:booking.id})]);
-        const sid = process.env.TWILIO_ACCOUNT_SID; const token = process.env.TWILIO_AUTH_TOKEN; const from = process.env.TWILIO_PHONE_NUMBER;
-        if (sid && token && from) {
-          const phoneNumbers = [String(learner.Item?.phone ?? ""), String(instructor.Item?.phone ?? "")].filter(Boolean);
-          await Promise.all(phoneNumbers.map(async to => {
-            const form = new URLSearchParams({ To: to, From: from, Body: message });
-            const response = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${sid}/Messages.json`, { method: "POST", headers: { authorization: `Basic ${Buffer.from(`${sid}:${token}`).toString("base64")}`, "content-type": "application/x-www-form-urlencoded" }, body: form });
-            if (!response.ok) throw new Error(`Twilio reminder failed (${response.status})`);
-          }));
-        }
         await docDb.send(new UpdateCommand({ TableName: tables.bookings, Key: { id: booking.id }, UpdateExpression: "SET reminders_sent=list_append(if_not_exists(reminders_sent,:empty),:entry)", ConditionExpression: "#status=:confirmed AND payment_status=:paid AND (attribute_not_exists(reminders_sent) OR NOT contains(reminders_sent,:key))", ExpressionAttributeNames: { "#status": "status" }, ExpressionAttributeValues: { ":empty": [], ":entry": [key], ":key": key, ":confirmed": "confirmed", ":paid": "paid" } }));
         delivered++;
       }
@@ -1377,7 +1356,7 @@ app.post("/v1/notifications/push-token",requireAuth,async(req,res,next)=>{
   try{const body=z.object({token:z.string().min(20).max(4096)}).safeParse(req.body);const appArn=process.env.SNS_PLATFORM_APPLICATION_ARN;if(!body.success||!appArn){res.status(503).json({error:"Push registration is not configured."});return;}const {CreatePlatformEndpointCommand}=await import("@aws-sdk/client-sns");const result=await sns.send(new CreatePlatformEndpointCommand({PlatformApplicationArn:appArn,Token:body.data.token,CustomUserData:req.auth!.sub}));if(!result.EndpointArn){res.status(502).json({error:"Could not register push token."});return;}await docDb.send(new UpdateCommand({TableName:tables.users,Key:{id:req.auth!.sub},UpdateExpression:"SET sns_endpoint_arn=:arn",ExpressionAttributeValues:{":arn":result.EndpointArn}}));res.json({status:"registered"});}catch(error){next(error);}
 });
 app.post("/v1/bookings/:id/calls",requireAuth,requireRole("learner","instructor"),requireCompleteParticipant,async(req,res,next)=>{
-  try{const body=z.object({scheduled_at:z.string().datetime({offset:true}).optional()}).safeParse(req.body);const booking=await participantBooking(String(req.params.id),req.auth!.sub);if(!body.success||!booking){res.status(404).json({error:"Booking conversation not found."});return;}const key=process.env.DAILY_API_KEY;if(!key){res.status(503).json({error:"Video calls are not configured yet."});return;}const starts=body.data.scheduled_at?new Date(body.data.scheduled_at):new Date();if(body.data.scheduled_at&&starts.getTime()<Date.now()-60000){res.status(400).json({error:"Choose a future call time."});return;}const roomName="md-"+randomUUID().replace(/-/g,"").slice(0,24);const expires=Math.floor((Math.max(starts.getTime(),Date.now())+4*3600000)/1000);const roomRes=await fetch("https://api.daily.co/v1/rooms",{method:"POST",headers:{Authorization:`Bearer ${key}`,"Content-Type":"application/json"},body:JSON.stringify({name:roomName,privacy:"private",properties:{exp:expires,enable_screenshare:true,enable_chat:true,enable_prejoin_ui:true}})});if(!roomRes.ok)throw new Error("Daily could not create this room.");const room=await roomRes.json() as any;const tokenRes=await fetch("https://api.daily.co/v1/meeting-tokens",{method:"POST",headers:{Authorization:`Bearer ${key}`,"Content-Type":"application/json"},body:JSON.stringify({properties:{room_name:roomName,user_name:req.auth!.email??"iDriveMzansi user",is_owner:req.auth!.role==="instructor",exp:expires}})});if(!tokenRes.ok)throw new Error("Daily could not issue a meeting token.");const token=await tokenRes.json() as any;const call={id:roomName,booking_id:booking.id,instructor_id:booking.instructor_id,learner_id:booking.learner_id,room_url:room.url,scheduled_at:starts.toISOString(),created_by:req.auth!.sub,created_at:new Date().toISOString()};await docDb.send(new PutCommand({TableName:tables.videoLessons,Item:call}));const other=req.auth!.sub===booking.learner_id?booking.instructor_id:booking.learner_id;await notifyUser(other,"video_call","Video call invitation",body.data.scheduled_at?`A lesson video call was scheduled for ${starts.toLocaleString("en-ZA",{timeZone:"Africa/Johannesburg"})}.`:"Your lesson partner started a video call.",{booking_id:booking.id,call_id:roomName});res.status(201).json({...call,token:token.token});}catch(error){next(error);}
+  try{const body=z.object({scheduled_at:z.string().datetime({offset:true}).optional()}).safeParse(req.body);const booking=await participantBooking(String(req.params.id),req.auth!.sub);if(!body.success||!booking){res.status(404).json({error:"Booking conversation not found."});return;}const lkUrl=process.env.LIVEKIT_URL,lkKey=process.env.LIVEKIT_API_KEY,lkSecret=process.env.LIVEKIT_API_SECRET;if(!lkUrl||!lkKey||!lkSecret){res.status(503).json({error:"Video calls are not configured yet."});return;}const starts=body.data.scheduled_at?new Date(body.data.scheduled_at):new Date();if(body.data.scheduled_at&&starts.getTime()<Date.now()-60000){res.status(400).json({error:"Choose a future call time."});return;}const roomName="md-"+randomUUID().replace(/-/g,"").slice(0,24);const expires=Math.floor((Math.max(starts.getTime(),Date.now())+4*3600000)/1000);const lkApi=new RoomServiceClient(lkUrl.replace(/^wss:/,"https:").replace(/^ws:/,"http:"),lkKey,lkSecret);await lkApi.createRoom({name:roomName,emptyTimeout:600,maxParticipants:4});const at=new AccessToken(lkKey,lkSecret,{identity:req.auth!.sub,name:req.auth!.email??"iDriveMzansi user",ttl:Math.max(600,expires-Math.floor(Date.now()/1000))});at.addGrant({roomJoin:true,room:roomName,canPublish:true,canSubscribe:true,canPublishData:true});const jwt=await at.toJwt();const token={token:jwt};const call={id:roomName,booking_id:booking.id,instructor_id:booking.instructor_id,learner_id:booking.learner_id,room_url:lkUrl,scheduled_at:starts.toISOString(),created_by:req.auth!.sub,created_at:new Date().toISOString()};await docDb.send(new PutCommand({TableName:tables.videoLessons,Item:call}));const other=req.auth!.sub===booking.learner_id?booking.instructor_id:booking.learner_id;await notifyUser(other,"video_call","Video call invitation",body.data.scheduled_at?`A lesson video call was scheduled for ${starts.toLocaleString("en-ZA",{timeZone:"Africa/Johannesburg"})}.`:"Your lesson partner started a video call.",{booking_id:booking.id,call_id:roomName});res.status(201).json({...call,token:token.token});}catch(error){next(error);}
 });
 app.post("/v1/bookings/:id/location",requireAuth,requireRole("learner","instructor"),requireCompleteParticipant,async(req,res,next)=>{
   try{const body=z.object({latitude:z.number().min(-90).max(90),longitude:z.number().min(-180).max(180),accuracy:z.number().nonnegative().optional(),battery_level:z.number().min(0).max(1).optional()}).safeParse(req.body);const booking=await participantBooking(String(req.params.id),req.auth!.sub);if(!body.success||!booking||booking.status!=="confirmed"){res.status(404).json({error:"Location sharing requires a confirmed lesson."});return;}const starts=new Date(booking.time).getTime();if(Date.now()<starts-30*60000||Date.now()>=starts){res.status(409).json({error:"Live location sharing is available only in the 30 minutes before the lesson starts."});return;}const slot=req.auth!.sub===booking.learner_id?"learner_location":"instructor_location";const location={...body.data,updated_at:new Date().toISOString()};await docDb.send(new UpdateCommand({TableName:tables.bookings,Key:{id:booking.id},UpdateExpression:`SET ${slot}=:location`,ExpressionAttributeValues:{":location":location}}));const refreshed=(await docDb.send(new GetCommand({TableName:tables.bookings,Key:{id:booking.id}}))).Item;res.json({shared:true,locations:{learner:refreshed?.learner_location??null,instructor:refreshed?.instructor_location??null},pickup_coordinates:booking.pickup_coordinates??null});}catch(error){next(error);}

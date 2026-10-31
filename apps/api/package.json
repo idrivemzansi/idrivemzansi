@@ -9,10 +9,11 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@aws-sdk/client-cognito-identity-provider": "^3.750.0",
     "@aws-sdk/client-apigatewaymanagementapi": "^3.750.0",
+    "@aws-sdk/client-cognito-identity-provider": "^3.750.0",
     "@aws-sdk/client-dynamodb": "^3.750.0",
     "@aws-sdk/client-s3": "^3.750.0",
+    "@aws-sdk/client-sesv2": "^3.1158.0",
     "@aws-sdk/client-sns": "^3.750.0",
     "@aws-sdk/lib-dynamodb": "^3.750.0",
     "@aws-sdk/s3-request-presigner": "^3.750.0",
@@ -21,8 +22,8 @@
     "dotenv": "^16.4.7",
     "express": "^4.21.2",
     "helmet": "^8.0.0",
-    "zod": "^3.24.2",
-    "@aws-sdk/client-sesv2": "^3.1158.0"
+    "livekit-server-sdk": "^2.19.2",
+    "zod": "^3.24.2"
   },
   "devDependencies": {
     "@types/cors": "^2.8.17",
