@@ -89,7 +89,7 @@ For `/ai/document-verify`, clients send `{ "document_type": "identity", "s3_url"
 
 Learner routes: K53 questions, K53 analysis, smart recommendations, and document verification. Instructor routes: lesson plan generation, student assessment, coaching, marketing, availability optimization, pricing, and document verification. Welcome messages and chatbot require authentication. Profile completion is enforced on learner and instructor workflows that depend on a finished profile.
 
-Modal hosts inference endpoints; the API should proxy requests, keep endpoint tokens private, apply rate limits and input/output validation, and avoid sending learner/instructor personal data unless necessary. Twilio handles transactional reminder delivery. SNS/FCM handles push fan-out. Persist delivery preferences and notification IDs so retries are idempotent.
+Modal hosts inference endpoints; the API should proxy requests, keep endpoint tokens private, apply rate limits and input/output validation, and avoid sending learner/instructor personal data unless necessary. SES handles transactional email delivery and SNS/FCM handles push fan-out; on-screen popups are delivered over the realtime WebSocket. Persist delivery preferences and notification IDs so retries are idempotent.
 
 ## Booking flow
 
@@ -97,7 +97,7 @@ The marketplace loads verified instructors from the API and shows their South Af
 
 Instructors publish weekly hours at `/instructor/availability`. Booking creates one DynamoDB lock per 30-minute interval in `booking-locks`, in the same transaction as the booking, to prevent overlapping bookings under concurrent requests. Unpaid checkout locks expire after 15 minutes; Paystack confirmation extends the lock to the lesson end. Run `infra/dynamodb/create_tables.py` to create the lock table and enable its TTL.
 
-After payment, both parties receive an SES email and the instructor must accept the request. The EventBridge reminder dispatcher is in `infra/reminders`; deploy its SAM template and set the same random value in Lambda `ReminderToken` and API `EVENTBRIDGE_REMINDER_TOKEN`. It processes due reminders every five minutes using SES and Twilio. Set `TWILIO_PHONE_NUMBER` (or configure your sender) and `SES_FROM_EMAIL`. Rescheduling updates the slot locks and reminder schedule transactionally. The payout path remains gated on instructor completion and learner confirmation.
+After payment, both parties receive an SES email and the instructor must accept the request. The EventBridge reminder dispatcher is in `infra/reminders`; deploy its SAM template and set the same random value in Lambda `ReminderToken` and API `EVENTBRIDGE_REMINDER_TOKEN`. It processes due reminders every five minutes using SES. Set `SES_FROM_EMAIL`. Rescheduling updates the slot locks and reminder schedule transactionally. The payout path remains gated on instructor completion and learner confirmation.
 
 ## eNaTIS slot feed
 
@@ -105,7 +105,7 @@ The homepage radar collects alert leads through `POST /v1/enatis/alert-lead`, an
 
 Slots expire automatically: the API runs a sweep at startup and then every 15 minutes (override with `ENATIS_EXPIRY_INTERVAL_MINUTES`) that flips any `available` row whose `available_date` is past in South Africa to `expired`, and the ingest route stores a past-dated observation as `expired` instead of `available` so it never alerts. Since the learner dashboard and the `enatis_check` action both filter on `status === "available"`, expired rows simply disappear from both. `POST /v1/internal/enatis/expire` runs the same sweep on demand for EventBridge or an operator, authenticated with the `x-reminder-token` header matching `EVENTBRIDGE_REMINDER_TOKEN`.
 
-Each slot whose current run starts as `available` is matched against saved preferences and unclaimed leads, and every match raises one idempotent in-app notification plus an email, capped at 500 alerts per request. SMS is sent only when `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN` and `TWILIO_PHONE_NUMBER` are set. Centre names are compared case-insensitively with a trailing "DLTC" removed, so a saved preference of "Langlaagte DLTC" matches a feed that posts "Langlaagte".
+Each slot whose current run starts as `available` is matched against saved preferences and unclaimed leads, and every match raises one idempotent in-app notification (shown as an on-screen popup) plus an email, capped at 500 alerts per request. Leads without an email address receive no alert. Centre names are compared case-insensitively with a trailing "DLTC" removed, so a saved preference of "Langlaagte DLTC" matches a feed that posts "Langlaagte".
 
 ## Domain
 

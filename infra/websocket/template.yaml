@@ -57,7 +57,6 @@ Resources:
           COGNITO_USER_POOL_ID: !Ref CognitoUserPoolId
           COGNITO_CLIENT_ID: !Ref CognitoUserPoolClientId
           DYNAMODB_TABLE_PREFIX: !Ref DynamoDbTablePrefix
-          AWS_REGION: !Ref AWS::Region
   RealtimeIntegration:
     Type: AWS::ApiGatewayV2::Integration
     Properties:

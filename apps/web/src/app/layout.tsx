@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import "./globals.css";
 import "leaflet/dist/leaflet.css";
+import NotificationPopup from "@/components/NotificationPopup";
 
 export const metadata: Metadata = {
   metadataBase: new URL("https://www.mzansidrive.co.za"),
@@ -9,5 +10,5 @@ export const metadata: Metadata = {
 };
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
-  return <html lang="en-ZA"><body>{children}</body></html>;
+  return <html lang="en-ZA"><body>{children}<NotificationPopup /></body></html>;
 }

@@ -2,7 +2,11 @@ import { useEffect, useState } from "react";
 import { ActivityIndicator, View } from "react-native";
 import { Stack, useRouter, useSegments } from "expo-router";
 import { StatusBar } from "expo-status-bar";
+import { registerGlobals } from "@livekit/react-native";
 import { destination, loadSession } from "../src/auth";
+
+registerGlobals();
+
 export default function Layout() {
   const [ready,setReady]=useState(false);const router=useRouter();const segments=useSegments();
   useEffect(()=>{let mounted=true;loadSession().finally(()=>{if(mounted)setReady(true);});return()=>{mounted=false;}},[]);
